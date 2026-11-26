@@ -272,7 +272,8 @@ fn same_user(client: &OwnedHandle, server: &OwnedHandle) -> io::Result<bool> {
 }
 
 fn verify_image(process: RawHandle) -> io::Result<()> {
-    let install = program_files()?.join("MSI-Toolkit");
+    let install = configured_install_dir()?;
+    verify_no_reparse_ancestors(&install)?;
     let image = install.join("msilt-daemon.exe");
     let dir_info = fs::symlink_metadata(&install)?;
     let image_info = fs::symlink_metadata(&image)?;
@@ -287,6 +288,104 @@ fn verify_image(process: RawHandle) -> io::Result<()> {
         ));
     }
     verify_process_image(process, &fs::canonicalize(&image)?)
+}
+
+fn configured_install_dir() -> io::Result<PathBuf> {
+    for (subkey, value) in [
+        (r"SOFTWARE\MSI-Toolkit", "InstallDir"),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit_is1",
+            "InstallLocation",
+        ),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit",
+            "InstallLocation",
+        ),
+    ] {
+        if let Some(raw) = read_hklm_string(subkey, value) {
+            let trimmed = raw.trim().trim_end_matches(['\\', '/']);
+            let path = PathBuf::from(trimmed);
+            if is_valid_local_dir(&path) {
+                return Ok(path);
+            }
+        }
+    }
+    Ok(program_files()?.join("MSI-Toolkit"))
+}
+
+fn is_valid_local_dir(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    let mut comps = path.components();
+    matches!(comps.next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+        && comps.next() == Some(Component::RootDir)
+        && comps.clone().next().is_some()
+        && comps.all(|c| matches!(c, Component::Normal(_)))
+}
+
+fn verify_no_reparse_ancestors(install: &Path) -> io::Result<()> {
+    use std::path::Component;
+    let mut comps = install.components();
+    let Some(Component::Prefix(prefix)) = comps.next() else {
+        return Err(untrusted("install path is not a local drive path"));
+    };
+    if comps.next() != Some(Component::RootDir) {
+        return Err(untrusted("install path has no root directory"));
+    }
+    let mut cur = PathBuf::from(prefix.as_os_str());
+    cur.push(r"\");
+    for part in comps {
+        let Component::Normal(name) = part else {
+            return Err(untrusted("install path contains a relative component"));
+        };
+        cur.push(name);
+        let meta = fs::symlink_metadata(&cur)?;
+        if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(untrusted(
+                "the daemon installation must not use reparse points",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_hklm_string(subkey: &str, value: &str) -> Option<String> {
+    const HKEY_LOCAL_MACHINE: isize = -2147483646; // 0x80000002
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    let subkey_w = wide_z(OsStr::new(subkey));
+    let value_w = wide_z(OsStr::new(value));
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            null_mut(),
+            &mut bytes,
+        )
+    };
+    if status != 0 || !(2..=65_536).contains(&bytes) {
+        return None;
+    }
+    let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    (!text.is_empty()).then_some(text)
 }
 
 fn verify_process_image(process: RawHandle, expected: &Path) -> io::Result<()> {
@@ -468,6 +567,15 @@ unsafe extern "system" {
         actual: *mut u32,
     ) -> i32;
     fn EqualSid(left: *const c_void, right: *const c_void) -> i32;
+    fn RegGetValueW(
+        hkey: isize,
+        sub_key: *const u16,
+        value: *const u16,
+        flags: u32,
+        reg_type: *mut u32,
+        data: *mut c_void,
+        data_len: *mut u32,
+    ) -> i32;
 }
 
 #[link(name = "shell32")]

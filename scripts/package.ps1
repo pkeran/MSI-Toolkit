@@ -8,7 +8,9 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$BinaryDir,
+    [string]$OutputDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,19 +23,21 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
-    $DistDir = Join-Path $Root 'dist\MSI-Toolkit'
-    $ZipPath = Join-Path $Root 'dist\MSI-Toolkit-win64.zip'
-    $SetupPath = Join-Path $Root 'dist\MSI-Toolkit-Setup.exe'
-    if (Test-Path -LiteralPath $DistDir) { Remove-Item -LiteralPath $DistDir -Recurse -Force }
+    if (-not $BinaryDir) { $BinaryDir = Join-Path $Root 'target\release' }
+    if (-not $OutputDir) { $OutputDir = Join-Path $Root 'dist' }
+    $OutputDir = [IO.Path]::GetFullPath($OutputDir)
+    $DistDir = Join-Path $OutputDir 'MSI-Toolkit'
+    $ZipPath = Join-Path $OutputDir 'MSI-Toolkit-win64.zip'
+    $SetupPath = Join-Path $OutputDir 'MSI-Toolkit-Setup.exe'
     if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
     if (Test-Path -LiteralPath $SetupPath) { Remove-Item -LiteralPath $SetupPath -Force }
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 
     Write-Host '[2/4] Staging portable release folder...' -ForegroundColor Cyan
     foreach ($bin in @('msilt-daemon.exe', 'msilt-ui.exe', 'msilt-cli.exe', 'msilt-probe.exe')) {
-        Copy-Item -LiteralPath (Join-Path $Root "target\release\$bin") -Destination (Join-Path $DistDir $bin) -Force
+        Copy-Item -LiteralPath (Join-Path $BinaryDir $bin) -Destination (Join-Path $DistDir $bin) -Force
     }
-    Copy-Item -LiteralPath (Join-Path $Root 'target\release\msilt-setup.exe') -Destination (Join-Path $DistDir 'uninstall.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $BinaryDir 'msilt-setup.exe') -Destination (Join-Path $DistDir 'uninstall.exe') -Force
     Copy-Item -LiteralPath (Join-Path $Root 'scripts\install.ps1') -Destination (Join-Path $DistDir 'install.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $Root 'scripts\uninstall.ps1') -Destination (Join-Path $DistDir 'uninstall.ps1') -Force
 
@@ -52,17 +56,24 @@ MSI-Toolkit (Windows 11 Native Release Bundle)
     Set-Content -LiteralPath (Join-Path $DistDir 'README.txt') -Encoding UTF8 -Value $readme
 
     Write-Host '[3/4] Packing single-file dist\MSI-Toolkit-Setup.exe...' -ForegroundColor Cyan
-    $setupStub = Join-Path $Root 'target\release\msilt-setup.exe'
-    $packProc = Start-Process -FilePath $setupStub -ArgumentList @('--pack', "`"$DistDir`"", "`"$SetupPath`"") -PassThru
-    $null = $packProc.Handle
-    $packProc.WaitForExit()
-    if ($packProc.ExitCode -ne 0) { throw "msilt-setup --pack failed (exit $($packProc.ExitCode))" }
+    $iscc = @((Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'), (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $iscc) { throw 'Install Inno Setup 6: winget install --id JRSoftware.InnoSetup -e' }
+    $translation = Join-Path $Root 'target\ChineseSimplified-6.7.3.isl'
+    if (-not (Test-Path -LiteralPath $translation)) {
+        Invoke-WebRequest 'https://raw.githubusercontent.com/jrsoftware/issrc/is-6_7_3/Files/Languages/Unofficial/ChineseSimplified.isl' -UseBasicParsing -OutFile $translation
+    }
+    if ((Get-FileHash -LiteralPath $translation).Hash -ne '7D544B9BB1D142CFA11F2E5D3CC8ABE2E55F8E066C5124E3772675AA236E1278') { throw 'Incorrect Inno Setup translation' }
+    $version = (Get-Item -LiteralPath (Join-Path $DistDir 'msilt-ui.exe')).VersionInfo.ProductVersion
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid app version' }
+    & $iscc /Q "/O$OutputDir" "/DPayload=$DistDir" "/DReleaseVersion=$version" "/DChineseMessages=$translation" (Join-Path $PSScriptRoot 'setup.iss')
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
     if (-not (Test-Path -LiteralPath $SetupPath -PathType Leaf)) { throw "Expected packed installer missing: $SetupPath" }
 
     Write-Host '[4/4] Creating dist\MSI-Toolkit-win64.zip & dist\SHA256SUMS.txt...' -ForegroundColor Cyan
-    Compress-Archive -Path "$DistDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal -Force
+    $payload = 'msilt-daemon.exe','msilt-ui.exe','msilt-cli.exe','msilt-probe.exe','uninstall.exe','install.ps1','install.cmd','uninstall.ps1','uninstall.cmd','README.txt' | ForEach-Object { Join-Path $DistDir $_ }
+    Compress-Archive -LiteralPath $payload -DestinationPath $ZipPath -CompressionLevel Optimal -Force
 
-    $SumPath = Join-Path $Root 'dist\SHA256SUMS.txt'
+    $SumPath = Join-Path $OutputDir 'SHA256SUMS.txt'
     $setupHash = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $zipHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

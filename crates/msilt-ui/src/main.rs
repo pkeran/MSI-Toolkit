@@ -92,8 +92,6 @@ mod cmd {
     pub const UPDATE_INSTALL: i32 = 97;
     pub const UPDATE_OPEN_PAGE: i32 = 98;
     pub const UPDATE_AUTO_CHECK: i32 = 99;
-    pub const ONBOARDING_CLOSE: i32 = 100;
-    pub const ONBOARDING_OPEN: i32 = 101;
     pub const OPEN_CONFIG_DIR: i32 = 102;
     pub const LAUNCH_UNINSTALL: i32 = 103;
 }
@@ -147,8 +145,6 @@ struct App {
     update_status_text: String,
     update_release: Option<updater::ReleaseInfo>,
     startup_update_checked: bool,
-    onboarding_open: bool,
-    onboarding_prompted: bool,
     headless: bool,
 }
 
@@ -251,7 +247,6 @@ impl App {
                 msilt_core::ManualOverride::Timed { seconds } => format!("{seconds} 秒").into(),
             });
         }
-        state.set_onboarding_open(self.onboarding_open);
         state.set_app_installed(if self.demo { true } else { updater::is_installed() });
         state.set_diagnostic(self.endpoint.diagnostic);
         state.set_render_backend("renderer-software".into());
@@ -725,16 +720,6 @@ impl App {
                     return;
                 }
             }
-            cmd::ONBOARDING_CLOSE => {
-                self.onboarding_open = false;
-                if a != 0 && !self.demo {
-                    self.update_config(|config| config.onboarding_completed = true);
-                    return;
-                }
-            }
-            cmd::ONBOARDING_OPEN => {
-                self.onboarding_open = true;
-            }
             cmd::OPEN_CONFIG_DIR => {
                 if let Err(err) = updater::open_config_dir() {
                     self.transient(1, "无法打开配置目录", err);
@@ -1050,10 +1035,6 @@ impl App {
                         }
                     }
                     if !self.demo && !self.headless && !self.endpoint.diagnostic {
-                        if !config.onboarding_completed && !self.onboarding_prompted {
-                            self.onboarding_prompted = true;
-                            self.onboarding_open = true;
-                        }
                         if config.updates.auto_check && !self.startup_update_checked {
                             self.startup_update_checked = true;
                             let weak_update = self.ui.clone();
@@ -1360,8 +1341,6 @@ fn run(options: Options) -> ExitCode {
         update_status_text: format!("当前 v{} · GitHub Releases", env!("CARGO_PKG_VERSION")),
         update_release: None,
         startup_update_checked: false,
-        onboarding_open: false,
-        onboarding_prompted: false,
         headless: headless.is_some(),
     };
     put_app(app);

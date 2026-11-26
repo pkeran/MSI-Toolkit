@@ -20,12 +20,19 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HANDLE, HLOCAL, HWND,
     LPARAM, LocalFree, VARIANT_FALSE, VARIANT_TRUE, WPARAM,
 };
-use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetNamedSecurityInfoW,
+};
 use windows::Win32::Security::{
-    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+    GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation,
+    TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    FILE_ATTRIBUTE_REPARSE_POINT, GetDriveTypeW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -69,10 +76,15 @@ pub const REPO_URL: &str = "https://github.com/pkeran/MSI-Toolkit";
 const TASK_FOLDER: &str = r"\MSI-Toolkit";
 const TASK_NAME: &str = "Daemon";
 const DAEMON_ARGS: &str = "--acpi --allow-platform-control --enable-ec-writes";
+const APP_REG_KEY: PCWSTR = w!(r"SOFTWARE\MSI-Toolkit");
 const UNINSTALL_REG_KEY: PCWSTR =
     w!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit");
+const INNO_UNINSTALL_REG_KEY: PCWSTR =
+    w!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit_is1");
 const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("MSIToolkit");
+const HARDENED_INSTALL_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
+const DRIVE_FIXED: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
@@ -97,7 +109,6 @@ pub struct SystemProbe {
     pub auto_start_enabled: bool,
     pub start_menu_exists: bool,
     pub desktop_shortcut_exists: bool,
-    pub elevated: bool,
     pub has_payload: bool,
 }
 
@@ -127,9 +138,238 @@ pub fn is_elevated() -> bool {
 }
 
 pub fn install_dir() -> PathBuf {
+    for (key, value) in [
+        (APP_REG_KEY, w!("InstallDir")),
+        (INNO_UNINSTALL_REG_KEY, w!("InstallLocation")),
+        (UNINSTALL_REG_KEY, w!("InstallLocation")),
+    ] {
+        if let Some(raw) = read_hklm_sz(key, value) {
+            let trimmed = raw.trim().trim_end_matches(['\\', '/']);
+            let candidate = PathBuf::from(trimmed);
+            if validate_local_fixed_dir(&candidate).is_ok() {
+                return candidate;
+            }
+        }
+    }
     known_folder(&FOLDERID_ProgramFiles)
         .unwrap_or_else(|_| PathBuf::from(r"C:\Program Files"))
         .join(APP_NAME)
+}
+
+fn read_hklm_sz(subkey: PCWSTR, value: PCWSTR) -> Option<String> {
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS || !(2..=65_536).contains(&bytes) {
+        return None;
+    }
+    let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    (!text.is_empty()).then_some(text)
+}
+
+fn write_install_dir_reg(dir: &Path) -> Result<(), String> {
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            APP_REG_KEY,
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut key,
+            None,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!("无法写入安装路径注册表（错误码 {}）", status.0));
+    }
+    let _guard = RegKeyGuard(key);
+    let clean = dir.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    set_reg_sz(key, w!("InstallDir"), &clean)
+}
+
+fn delete_install_dir_reg() {
+    unsafe {
+        let _ = RegDeleteKeyW(HKEY_LOCAL_MACHINE, APP_REG_KEY);
+    }
+}
+
+pub fn validate_local_fixed_dir(dir: &Path) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+    let mut comps = dir.components();
+    let Some(Component::Prefix(prefix)) = comps.next() else {
+        return Err("安装路径必须是本地磁盘的绝对路径。".into());
+    };
+    if !matches!(prefix.kind(), Prefix::Disk(_)) || comps.next() != Some(Component::RootDir) {
+        return Err("安装路径必须是本地固定磁盘上的目录。".into());
+    }
+    let mut root = PathBuf::from(prefix.as_os_str());
+    root.push(r"\");
+    let root_w = wide(&root);
+    if unsafe { GetDriveTypeW(PCWSTR(root_w.as_ptr())) } != DRIVE_FIXED {
+        return Err("仅支持安装到本地固定磁盘。".into());
+    }
+    let mut depth = 0usize;
+    for part in comps {
+        match part {
+            Component::Normal(name) => {
+                let s = name.to_string_lossy();
+                if s.is_empty() || s.ends_with([' ', '.']) || s.contains([':', '"', '/', '\\']) {
+                    return Err("安装路径包含无效字符。".into());
+                }
+                depth += 1;
+            }
+            _ => return Err("安装路径不能包含相对段。".into()),
+        }
+    }
+    if depth == 0 {
+        return Err("不能直接安装到磁盘根目录，请选择专用子目录。".into());
+    }
+    Ok(())
+}
+
+fn verify_no_reparse_chain(dir: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    use std::path::Component;
+    let mut comps = dir.components();
+    let Some(Component::Prefix(prefix)) = comps.next() else {
+        return Err("安装路径无效。".into());
+    };
+    if comps.next() != Some(Component::RootDir) {
+        return Err("安装路径缺少根目录。".into());
+    }
+    let mut current = PathBuf::from(prefix.as_os_str());
+    current.push(r"\");
+    for part in comps {
+        let Component::Normal(name) = part else {
+            return Err("安装路径包含非法段。".into());
+        };
+        current.push(name);
+        let meta = fs::symlink_metadata(&current)
+            .map_err(|e| format!("无法校验目录 {}：{e}", current.display()))?;
+        if !meta.is_dir() || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0) != 0 {
+            return Err(format!(
+                "安全检查失败：{} 是符号链接或联接点。",
+                current.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Applies a protected admin-only NTFS ACL (`SYSTEM`/`Administrators` Full,
+/// `Users` Read & Execute only) to the installation directory and installed
+/// executables so custom locations (e.g. `D:\Apps\MSI-Toolkit`) match the
+/// security boundary of `C:\Program Files\MSI-Toolkit`.
+fn harden_install_dir(dir: &Path) -> Result<(), String> {
+    validate_local_fixed_dir(dir)?;
+    verify_no_reparse_chain(dir)?;
+
+    let sddl_w = wide(HARDENED_INSTALL_SDDL);
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl_w.as_ptr()),
+            SDDL_REVISION_1,
+            &mut sd,
+            None,
+        )
+        .map_err(|e| format!("无法构建目录安全描述符：{e}"))?;
+    }
+    struct SdGuard(PSECURITY_DESCRIPTOR);
+    impl Drop for SdGuard {
+        fn drop(&mut self) {
+            if !self.0.0.is_null() {
+                unsafe {
+                    let _ = LocalFree(Some(HLOCAL(self.0.0)));
+                }
+            }
+        }
+    }
+    let _sd_guard = SdGuard(sd);
+
+    let mut owner = PSID::default();
+    let mut owner_defaulted = windows::core::BOOL::default();
+    let mut dacl_present = windows::core::BOOL::default();
+    let mut dacl_defaulted = windows::core::BOOL::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    unsafe {
+        GetSecurityDescriptorOwner(sd, &mut owner, &mut owner_defaulted)
+            .map_err(|e| format!("读取安全描述符所有者失败：{e}"))?;
+        GetSecurityDescriptorDacl(sd, &mut dacl_present, &mut dacl, &mut dacl_defaulted)
+            .map_err(|e| format!("读取安全描述符 ACL 失败：{e}"))?;
+    }
+    if !dacl_present.as_bool() || dacl.is_null() || owner.0.is_null() {
+        return Err("目录安全描述符无效。".into());
+    }
+
+    let apply_one = |target: &Path| -> Result<(), String> {
+        let target_w = wide(target);
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                PCWSTR(target_w.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION
+                    | DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION,
+                Some(owner),
+                None,
+                Some(dacl),
+                None,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(format!(
+                "无法设置 {} 的安全权限（错误码 {}）",
+                target.display(),
+                status.0
+            ));
+        }
+        Ok(())
+    };
+
+    apply_one(dir)?;
+    for name in [
+        "msilt-daemon.exe",
+        "msilt-ui.exe",
+        "msilt-cli.exe",
+        "msilt-probe.exe",
+        "msilt-maintenance.exe",
+        "uninstall.exe",
+    ] {
+        let p = dir.join(name);
+        if p.is_file() {
+            apply_one(&p)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn start_menu_shortcut_path() -> PathBuf {
@@ -180,9 +420,34 @@ pub fn probe_system(source_dir: Option<&Path>) -> SystemProbe {
         auto_start_enabled,
         start_menu_exists,
         desktop_shortcut_exists,
-        elevated: is_elevated(),
         has_payload,
     }
+}
+
+/// Launches the current executable elevated via UAC without waiting (so a
+/// non-elevated uninstaller can exit immediately and release its image lock).
+pub fn elevate_detached(args: &[String]) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法获取程序路径：{e}"))?;
+    let exe_w = wide(&exe);
+    let verb_w = wide("runas");
+    let params = join_windows_args(args);
+    let params_w = wide(&params);
+
+    let mut sei = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        lpVerb: PCWSTR(verb_w.as_ptr()),
+        lpFile: PCWSTR(exe_w.as_ptr()),
+        lpParameters: PCWSTR(params_w.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+
+    unsafe {
+        if ShellExecuteExW(&mut sei).is_err() {
+            return Err("已取消管理员授权，操作未执行。".into());
+        }
+    }
+    Ok(())
 }
 
 /// Launches the current executable elevated via UAC and waits for its exit code.
@@ -276,6 +541,8 @@ pub fn run_install(opts: &InstallOptions, progress: impl Fn(u32, &str)) -> Resul
     }
 
     progress(80, "正在注册 Windows 应用信息与快捷方式…");
+    harden_install_dir(&target_dir)?;
+    write_install_dir_reg(&target_dir)?;
     register_uninstall_entry(&target_dir, total_bytes)?;
     let ui_exe = target_dir.join("msilt-ui.exe");
     let start_lnk = start_menu_shortcut_path();
@@ -310,9 +577,10 @@ pub fn run_install(opts: &InstallOptions, progress: impl Fn(u32, &str)) -> Resul
 
     progress(94, "正在启动后台守护进程…");
     start_daemon(&daemon_exe, &target_dir, opts.auto_start)?;
+    progress(96, "正在确认后台已连接…");
+    wait_for_daemon(&target_dir)?;
 
     if opts.launch_ui {
-        thread::sleep(Duration::from_millis(450));
         launch_ui_medium(&ui_exe);
     }
 
@@ -341,6 +609,7 @@ pub fn run_uninstall(opts: &UninstallOptions, progress: impl Fn(u32, &str)) -> R
         let _ = fs::remove_file(desk);
     }
     unregister_uninstall_entry();
+    delete_install_dir_reg();
 
     progress(65, "正在删除程序文件…");
     if target_dir.is_dir() {
@@ -775,6 +1044,125 @@ fn start_daemon(daemon_exe: &Path, workdir: &Path, via_task: bool) -> Result<(),
     Ok(())
 }
 
+pub fn wizard_action(args: &[String]) -> Result<(), String> {
+    if !is_elevated() {
+        return Err("需要管理员权限".into());
+    }
+    let Some(action) = args.first().map(String::as_str) else {
+        return Err("缺少安装操作参数".into());
+    };
+
+    let mut explicit_dir: Option<PathBuf> = None;
+    let mut autostart_mode: Option<String> = None;
+    let mut purge = false;
+    let mut idx = 1;
+    while idx < args.len() {
+        let arg = args[idx].as_str();
+        if arg == "--dir" {
+            if let Some(v) = args.get(idx + 1) {
+                explicit_dir = Some(PathBuf::from(v.trim().trim_end_matches(['\\', '/'])));
+                idx += 1;
+            }
+        } else if let Some(val) = arg.strip_prefix("--autostart=") {
+            autostart_mode = Some(val.to_ascii_lowercase());
+        } else if arg == "--purge" {
+            purge = true;
+        }
+        idx += 1;
+    }
+
+    match action {
+        "--wizard-stop" => stop_running_processes(),
+        "--wizard-remove" => {
+            stop_running_processes();
+            remove_daemon_task();
+            remove_user_run_key();
+            unregister_uninstall_entry();
+            delete_install_dir_reg();
+            // Remove legacy pre-Inno direct Start Menu link if present.
+            let legacy_lnk = start_menu_shortcut_path();
+            if legacy_lnk.is_file() {
+                let _ = fs::remove_file(&legacy_lnk);
+            }
+            if purge {
+                if let Some(data_dir) = local_data_dir() {
+                    let _ = fs::remove_dir_all(data_dir);
+                }
+            }
+        }
+        "--wizard-start" => {
+            let dir = explicit_dir
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(Path::to_path_buf))
+                })
+                .unwrap_or_else(install_dir);
+            harden_install_dir(&dir)?;
+            write_install_dir_reg(&dir)?;
+
+            // Clean any legacy pre-Inno helper scripts/artifacts in the target folder.
+            for legacy in [
+                "uninstall.exe",
+                "install.ps1",
+                "install.cmd",
+                "uninstall.ps1",
+                "uninstall.cmd",
+                "README.txt",
+            ] {
+                let p = dir.join(legacy);
+                if p.is_file() {
+                    let _ = fs::remove_file(p);
+                }
+            }
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.starts_with("startup-check-") && name.ends_with(".txt") {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+
+            let exe = dir.join("msilt-daemon.exe");
+            let enabled = match autostart_mode.as_deref() {
+                Some("0" | "false") => false,
+                Some("1" | "true") => true,
+                _ => query_task_enabled()?.unwrap_or(true),
+            };
+            register_daemon_task(&exe, enabled)?;
+            start_daemon(&exe, &dir, enabled)?;
+            wait_for_daemon(&dir)?;
+            unregister_uninstall_entry(); // Retire the pre-Inno entry only after a successful migration.
+            remove_user_run_key();
+            // Clean legacy pre-Inno flat Start Menu link so Start Menu doesn't show duplicates.
+            let legacy_lnk = start_menu_shortcut_path();
+            if legacy_lnk.is_file() {
+                let _ = fs::remove_file(&legacy_lnk);
+            }
+        }
+        _ => return Err("未知安装操作".into()),
+    }
+    Ok(())
+}
+
+fn wait_for_daemon(dir: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = Command::new(dir.join("msilt-cli.exe"))
+            .args(["--json", "status"])
+            .current_dir(dir)
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .output().map_err(|e| format!("无法检查后台状态：{e}"))?;
+        if output.status.success() { return Ok(()); }
+        if Instant::now() >= deadline {
+            return Err(format!("程序文件已安装，但后台没有响应。\n{}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+}
+
 fn remove_daemon_task() {
     let _ = with_scheduler(|service| {
         if let Some(folder) =
@@ -797,9 +1185,12 @@ fn launch_ui_medium(ui_exe: &Path) {
 
 fn schedule_dir_self_delete(dir: &Path) {
     let dir_s = dir.to_string_lossy().replace('"', "");
-    let cmd_line = format!("ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{dir_s}\"");
+    // Use raw_arg so Rust does not backslash-escape quotes (cmd.exe /C treats \" as literal).
+    let raw = format!(
+        "/C \"for /L %i in (1,1,10) do @(ping -n 2 127.0.0.1 >nul & rmdir /s /q \"{dir_s}\" 2>nul & if not exist \"{dir_s}\" exit 0)\""
+    );
     let _ = Command::new("cmd.exe")
-        .args(["/C", &cmd_line])
+        .raw_arg(&raw)
         .current_dir(std::env::temp_dir())
         .creation_flags(CREATE_NO_WINDOW.0)
         .spawn();
@@ -812,9 +1203,9 @@ fn schedule_temp_cleanup(current_exe: &Path) {
         let t_low = temp.to_string_lossy().to_ascii_lowercase();
         if p_low.starts_with(&t_low) && p_low.contains("msi-toolkit-update-") {
             let dir_s = parent.to_string_lossy().replace('"', "");
-            let cmd_line = format!("ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{dir_s}\"");
+            let raw = format!("/C \"ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{dir_s}\" 2>nul\"");
             let _ = Command::new("cmd.exe")
-                .args(["/C", &cmd_line])
+                .raw_arg(&raw)
                 .current_dir(&temp)
                 .creation_flags(CREATE_NO_WINDOW.0)
                 .spawn();
@@ -960,6 +1351,9 @@ mod tests {
     #[test]
     fn probe_system_runs_safely_without_side_effects() {
         let probe = probe_system(None);
-        assert!(probe.install_dir.ends_with("MSI-Toolkit"));
+        assert!(probe.install_dir.is_absolute());
+        assert!(validate_local_fixed_dir(Path::new(r"C:\Program Files\MSI-Toolkit")).is_ok());
+        assert!(validate_local_fixed_dir(Path::new(r"C:\")).is_err());
+        assert!(validate_local_fixed_dir(Path::new(r"\\server\share\MSI-Toolkit")).is_err());
     }
 }

@@ -44,6 +44,7 @@ Remove-Item -LiteralPath (Join-Path $env:ProgramData 'Microsoft\Windows\Start Me
 $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'MSI-Toolkit.lnk'
 Remove-Item -LiteralPath $desktopLnk -Force -ErrorAction SilentlyContinue
 Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path 'HKLM:\SOFTWARE\MSI-Toolkit' -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host '[3/3] Removing installation directory...' -ForegroundColor Cyan
 $InstallDir = Join-Path $env:ProgramFiles 'MSI-Toolkit'

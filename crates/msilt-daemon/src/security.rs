@@ -17,10 +17,13 @@ use windows::{
         Security::{Authorization::*, *},
         Storage::FileSystem::*,
         System::{
-            Com::CoTaskMemFree, Environment::*, Pipes::*, RemoteDesktop::*, SystemServices::*,
-            Threading::*,
+            Com::CoTaskMemFree, Environment::*, Pipes::*, Registry::*, RemoteDesktop::*,
+            SystemServices::*, Threading::*,
         },
-        UI::Shell::*,
+        UI::{
+            Shell::*,
+            WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId},
+        },
     },
     core::{GUID, PCWSTR, PWSTR},
 };
@@ -234,16 +237,51 @@ impl Security {
         let linked: TOKEN_LINKED_TOKEN = token_value(raw(&token), TokenLinkedToken)?;
         let linked = unsafe { own(linked.LinkedToken) };
         let client = Identity::read(raw(&linked))?;
-        if !server.same_user_session(&client)
-            || !client.medium()
-            || token_value::<u32>(raw(&linked), TokenType)? != TokenPrimary.0 as u32
-        {
+        if !server.same_user_session(&client) || !client.medium() {
             return Err(denied("linked token is not the same interactive user"));
         }
+        // Without SeTcbPrivilege, Windows can return an identification-only linked
+        // token. Use the shell's primary token only after matching its login to it.
+        let interactive = if token_value::<u32>(raw(&linked), TokenType)? == TokenPrimary.0 as u32 {
+            linked
+        } else {
+            let shell = unsafe { GetShellWindow() };
+            let mut pid = 0;
+            if shell.is_invalid() || unsafe { GetWindowThreadProcessId(shell, Some(&mut pid)) } == 0
+            {
+                return Err(denied("interactive Windows shell is unavailable"));
+            }
+            let process = unsafe {
+                own(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(os_error)?)
+            };
+            let token = process_token(raw(&process), TOKEN_QUERY | TOKEN_DUPLICATE)?;
+            let desktop = Identity::read(raw(&token))?;
+            if !client.same_user_session(&desktop)
+                || client.logon != desktop.logon
+                || !desktop.medium()
+            {
+                return Err(denied(
+                    "shell token does not match the linked desktop login",
+                ));
+            }
+            let mut primary = HANDLE::default();
+            unsafe {
+                DuplicateTokenEx(
+                    raw(&token),
+                    TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE,
+                    None,
+                    SecurityImpersonation,
+                    TokenPrimary,
+                    &mut primary,
+                )
+                .map_err(os_error)?;
+                own(primary)
+            }
+        };
         Ok(Self {
             server,
             client,
-            interactive_token: Arc::new(linked),
+            interactive_token: Arc::new(interactive),
             server_token: Some(token),
             readonly_endpoint: false,
             test_peer: None,
@@ -728,24 +766,25 @@ pub(crate) fn known_folder(id: &GUID, token: Option<HANDLE>) -> io::Result<PathB
 
 struct ProtectedInstall {
     directory: PathBuf,
-    _program_files: OwnedHandle,
+    _ancestors: Vec<OwnedHandle>,
     _directory: OwnedHandle,
 }
 
 impl ProtectedInstall {
     fn open() -> io::Result<Self> {
-        let root = known_folder(&FOLDERID_ProgramFiles, None)?;
-        let directory = root.join("MSI-Toolkit");
+        let directory = configured_install_dir()?;
+        let ancestors = lock_non_reparse_ancestors(&directory)?;
+        let dir_handle = protected_object(&directory, true)?;
         Ok(Self {
-            _program_files: protected_object(&root, true)?,
-            _directory: protected_object(&directory, true)?,
+            _ancestors: ancestors,
+            _directory: dir_handle,
             directory,
         })
     }
 
     fn image(&self, actual: &Path, name: &str) -> io::Result<OwnedHandle> {
         let expected = self.directory.join(name);
-        // The fixed path is read from the OS, not inferred from the peer's path.
+        // The installed path is read from admin-only HKLM / OS folders, not inferred from the peer.
         if !path_equal(actual, &expected) {
             return Err(denied(
                 "image is outside the protected MSI-Toolkit installation",
@@ -753,6 +792,152 @@ impl ProtectedInstall {
         }
         protected_object(&expected, false)
     }
+}
+
+fn configured_install_dir() -> io::Result<PathBuf> {
+    for (subkey, value) in [
+        (r"SOFTWARE\MSI-Toolkit", "InstallDir"),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit_is1",
+            "InstallLocation",
+        ),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit",
+            "InstallLocation",
+        ),
+    ] {
+        if let Some(raw) = read_hklm_string(subkey, value) {
+            let trimmed = raw.trim().trim_end_matches(['\\', '/']);
+            if let Some(valid) = validate_local_install_dir(Path::new(trimmed)) {
+                return Ok(valid);
+            }
+        }
+    }
+    Ok(known_folder(&FOLDERID_ProgramFiles, None)?.join("MSI-Toolkit"))
+}
+
+fn read_hklm_string(subkey: &str, value: &str) -> Option<String> {
+    let subkey_w = wide(subkey);
+    let value_w = wide(value);
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey_w.as_ptr()),
+            PCWSTR(value_w.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS || !(2..=65_536).contains(&bytes) {
+        return None;
+    }
+    let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey_w.as_ptr()),
+            PCWSTR(value_w.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    (!text.is_empty()).then_some(text)
+}
+
+fn validate_local_install_dir(path: &Path) -> Option<PathBuf> {
+    use std::path::{Component, Prefix};
+    let mut comps = path.components();
+    let Some(Component::Prefix(prefix)) = comps.next() else {
+        return None;
+    };
+    if !matches!(prefix.kind(), Prefix::Disk(_)) || comps.next() != Some(Component::RootDir) {
+        return None;
+    }
+    let mut depth = 0usize;
+    for part in comps {
+        match part {
+            Component::Normal(name) => {
+                let text = name.to_str()?;
+                if text.is_empty()
+                    || text.ends_with([' ', '.'])
+                    || text.contains([':', '"', '/', '\\'])
+                    || text.chars().any(char::is_control)
+                {
+                    return None;
+                }
+                depth += 1;
+            }
+            _ => return None,
+        }
+    }
+    (depth >= 1).then(|| path.to_path_buf())
+}
+
+fn lock_non_reparse_ancestors(directory: &Path) -> io::Result<Vec<OwnedHandle>> {
+    use std::path::Component;
+    let mut comps = directory.components();
+    let Some(Component::Prefix(prefix)) = comps.next() else {
+        return Err(denied("installation path must be an absolute local path"));
+    };
+    if comps.next() != Some(Component::RootDir) {
+        return Err(denied("installation path must have a root directory"));
+    }
+    let mut current = PathBuf::from(prefix.as_os_str());
+    current.push(r"\");
+    let mut handles = Vec::new();
+    let mut rest = comps.peekable();
+    while let Some(Component::Normal(part)) = rest.next() {
+        if rest.peek().is_none() {
+            break;
+        }
+        current.push(part);
+        handles.push(open_non_reparse_dir(&current)?);
+    }
+    Ok(handles)
+}
+
+fn open_non_reparse_dir(path: &Path) -> io::Result<OwnedHandle> {
+    let name = wide(path);
+    let handle = unsafe {
+        own(CreateFileW(
+            PCWSTR(name.as_ptr()),
+            FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        .map_err(os_error)?)
+    };
+    let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
+    unsafe {
+        GetFileInformationByHandleEx(
+            raw(&handle),
+            FileAttributeTagInfo,
+            (&raw mut info).cast(),
+            size_of_val(&info) as u32,
+        )
+    }
+    .map_err(os_error)?;
+    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+    {
+        return Err(denied(
+            "installation ancestor contains a reparse point or non-directory",
+        ));
+    }
+    Ok(handle)
 }
 
 fn path_equal(a: &Path, b: &Path) -> bool {

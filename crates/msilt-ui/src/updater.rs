@@ -379,7 +379,7 @@ pub fn download_and_launch_update(
                 return InstallOutcome::Failed(format!("写入升级程序失败：{e}"));
             }
             on_progress(&format!("{} 校验通过，正在启动升级程序…", info.tag));
-            match Command::new(&setup_path).arg("--update").spawn() {
+            match open_executable(&setup_path, "/SILENT /NORESTART /MSILTUPDATE --update") {
                 Ok(_) => InstallOutcome::Launched {
                     tag: info.tag.clone(),
                 },
@@ -456,10 +456,80 @@ pub fn open_release_page(url: &str) {
 // ── Local installation & maintenance helpers ────────────────────────────────
 
 pub fn installed_dir() -> PathBuf {
+    for (subkey, value) in [
+        (r"SOFTWARE\MSI-Toolkit", "InstallDir"),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit_is1",
+            "InstallLocation",
+        ),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit",
+            "InstallLocation",
+        ),
+    ] {
+        if let Some(raw) = read_hklm_string(subkey, value) {
+            let trimmed = raw.trim().trim_end_matches(['\\', '/']);
+            if !trimmed.is_empty() {
+                let candidate = PathBuf::from(trimmed);
+                if candidate.is_absolute() && candidate.join("msilt-daemon.exe").is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("msilt-daemon.exe").is_file()
+                && (dir.join("unins000.exe").is_file() || dir.join("uninstall.exe").is_file())
+            {
+                return dir.to_path_buf();
+            }
+        }
+    }
     std::env::var_os("ProgramFiles")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
         .join("MSI-Toolkit")
+}
+
+fn read_hklm_string(subkey: &str, value: &str) -> Option<String> {
+    const HKEY_LOCAL_MACHINE: isize = -2147483646; // 0x80000002
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    let subkey_w = wide_z(subkey);
+    let value_w = wide_z(value);
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            null_mut(),
+            &mut bytes,
+        )
+    };
+    if status != 0 || !(2..=65_536).contains(&bytes) {
+        return None;
+    }
+    let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    (!text.is_empty()).then_some(text)
 }
 
 pub fn is_installed() -> bool {
@@ -478,6 +548,8 @@ pub fn open_config_dir() -> Result<(), String> {
 
 pub fn launch_uninstaller() -> Result<(), String> {
     let dir = installed_dir();
+    let wizard = dir.join("unins000.exe");
+    if wizard.is_file() { return open_executable(&wizard, ""); }
     let native = dir.join("uninstall.exe");
     if native.is_file() {
         Command::new(&native)
@@ -491,14 +563,19 @@ pub fn launch_uninstaller() -> Result<(), String> {
         shell_open_path(&legacy);
         return Ok(());
     }
-    Err("未在 Program Files 找到已安装的卸载程序（便携版直接删除目录即可）。".into())
+    Err("未找到已安装的卸载程序（便携版直接删除目录即可）。".into())
+}
+
+fn open_executable(path: &Path, params: &str) -> Result<(), String> {
+    let result = unsafe { ShellExecuteW(null_mut(), null(), wide(path).as_ptr(), wide_z(params).as_ptr(), null(), 1) };
+    if result > 32 { Ok(()) } else { Err(format!("Windows 无法启动安装程序（{result}）")) }
 }
 
 pub fn start_installed_daemon() -> Result<(), String> {
     let dir = installed_dir();
     let daemon = dir.join("msilt-daemon.exe");
     if !daemon.is_file() {
-        return Err("尚未安装到 Program Files，请先运行 MSI-Toolkit-Setup.exe 安装。".into());
+        return Err("尚未完成安装，请先运行 MSI-Toolkit-Setup.exe 安装。".into());
     }
     let verb = wide_z("runas");
     let file = wide(&daemon);
@@ -946,6 +1023,19 @@ unsafe extern "system" {
         directory: *const u16,
         show: i32,
     ) -> isize;
+}
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn RegGetValueW(
+        hkey: isize,
+        sub_key: *const u16,
+        value: *const u16,
+        flags: u32,
+        reg_type: *mut u32,
+        data: *mut c_void,
+        data_len: *mut u32,
+    ) -> i32;
 }
 
 #[cfg(test)]

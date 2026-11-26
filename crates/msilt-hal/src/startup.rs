@@ -2,9 +2,10 @@
 
 use std::fs::{File, OpenOptions};
 use std::mem::ManuallyDrop;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
-use std::path::{Component, Path, Prefix};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use msilt_core::{StartupMode, StartupStatus};
 use windows::Win32::Foundation::*;
@@ -28,7 +29,7 @@ use crate::{Diagnostic, DiagnosticKind, identity};
 
 const OP: &str = "MSI-Toolkit startup";
 const DAEMON: &str = "msilt-daemon.exe";
-const INSTALLED_DAEMON: &str = r"C:\Program Files\MSI-Toolkit\msilt-daemon.exe";
+const DEFAULT_INSTALLED_DAEMON: &str = r"C:\Program Files\MSI-Toolkit\msilt-daemon.exe";
 const TASK_FOLDER: &str = r"\MSI-Toolkit";
 const TASK_NAME: &str = "Daemon";
 const TASK_ARGS: &str = "--acpi --allow-platform-control --enable-ec-writes";
@@ -37,6 +38,76 @@ const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("MSIToolkit");
 const TRUSTED_INSTALLER: PCWSTR =
     w!("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+
+fn installed_daemon_path() -> PathBuf {
+    for (subkey, value) in [
+        (r"SOFTWARE\MSI-Toolkit", "InstallDir"),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit_is1",
+            "InstallLocation",
+        ),
+        (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit",
+            "InstallLocation",
+        ),
+    ] {
+        if let Some(dir) = read_hklm_sz(subkey, value) {
+            let trimmed = dir.trim().trim_end_matches(['\\', '/']);
+            let candidate = Path::new(trimmed).join(DAEMON);
+            if valid_local_path(&candidate, DAEMON) {
+                return candidate;
+            }
+        }
+    }
+    std::env::var_os("ProgramFiles")
+        .map(|pf| PathBuf::from(pf).join("MSI-Toolkit").join(DAEMON))
+        .filter(|p| valid_local_path(p, DAEMON))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_INSTALLED_DAEMON))
+}
+
+fn read_hklm_sz(subkey: &str, value: &str) -> Option<String> {
+    let subkey_w: Vec<u16> = std::ffi::OsStr::new(subkey)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let value_w: Vec<u16> = std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey_w.as_ptr()),
+            PCWSTR(value_w.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS || !(2..=65_536).contains(&bytes) {
+        return None;
+    }
+    let mut buf = vec![0u16; (bytes as usize).div_ceil(2)];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey_w.as_ptr()),
+            PCWSTR(value_w.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    (!text.is_empty()).then_some(text)
+}
 
 pub fn inspect_startup() -> StartupStatus {
     let task = with_scheduler(|service| {
@@ -52,13 +123,14 @@ pub fn inspect_startup() -> StartupStatus {
 
 pub fn set_startup(enabled: bool) -> Result<StartupStatus, Diagnostic> {
     let elevated = identity::is_elevated()?;
-    let installed = Path::new(INSTALLED_DAEMON);
+    let installed_path = installed_daemon_path();
+    let installed = installed_path.as_path();
     let mut use_task = false;
     if elevated {
         match checked_local_file(installed, DAEMON, OP) {
             Ok(file) => {
                 if enabled {
-                    file.require_admin_path(OP)?;
+                    file.require_protected_install(OP)?;
                 }
                 use_task = true;
                 set_task(enabled, installed)?;
@@ -149,12 +221,18 @@ fn describe(
 }
 
 fn current_is_installed() -> bool {
+    let expected = installed_daemon_path();
+    let Some(expected_str) = expected.to_str() else {
+        return false;
+    };
     std::env::current_exe().ok().is_some_and(|path| {
         path.to_str().is_some_and(|name| {
             name.strip_prefix(r"\\?\")
                 .unwrap_or(name)
-                .eq_ignore_ascii_case(INSTALLED_DAEMON)
-        }) && checked_local_file(Path::new(INSTALLED_DAEMON), DAEMON, OP).is_ok()
+                .eq_ignore_ascii_case(expected_str)
+        }) && checked_local_file(&expected, DAEMON, OP)
+            .and_then(|file| file.require_protected_install(OP))
+            .is_ok()
     })
 }
 
@@ -173,91 +251,111 @@ impl LocalFile {
     }
 
     pub(crate) fn require_admin_path(&self, op: &'static str) -> Result<(), Diagnostic> {
-        struct LocalAllocation(*mut std::ffi::c_void);
-        impl Drop for LocalAllocation {
-            fn drop(&mut self) {
-                unsafe { LocalFree(Some(HLOCAL(self.0))) };
-            }
-        }
-        let mut trusted = PSID::default();
-        unsafe { ConvertStringSidToSidW(TRUSTED_INSTALLER, &mut trusted) }
-            .map_err(|error| Diagnostic::windows(op, error))?;
-        let _allocation = LocalAllocation(trusted.0);
-        let trusted = |sid: PSID| {
-            !sid.0.is_null()
-                && unsafe {
-                    IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool()
-                        || IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
-                        || EqualSid(sid, trusted).is_ok()
-                }
-        };
-        let denied = || {
-            Diagnostic::new(op, DiagnosticKind::AccessDenied)
-                .detail("launch path permits changes by an untrusted principal")
-        };
-        let handles = self
+        let handles: Vec<HANDLE> = self
             .parents
             .iter()
             .skip(1)
             .map(|handle| handle.0)
-            .chain([HANDLE(self.file.as_raw_handle())]);
-        for handle in handles {
-            let mut descriptor = PSECURITY_DESCRIPTOR::default();
-            let mut owner = PSID::default();
-            let mut acl = std::ptr::null_mut();
-            let status = unsafe {
-                GetSecurityInfo(
-                    handle,
-                    SE_FILE_OBJECT,
-                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                    Some(&mut owner),
-                    None,
-                    Some(&mut acl),
-                    None,
-                    Some(&mut descriptor),
-                )
-            };
-            if status != ERROR_SUCCESS {
-                return Err(Diagnostic::win32(op, status.0));
-            }
-            let _allocation = LocalAllocation(descriptor.0);
-            if acl.is_null() || !trusted(owner) {
-                return Err(denied());
-            }
-            for i in 0..u32::from(unsafe { (*acl).AceCount }) {
-                let mut raw = std::ptr::null_mut();
-                unsafe { GetAce(acl, i, &mut raw) }
-                    .map_err(|error| Diagnostic::windows(op, error))?;
-                let header = unsafe { *raw.cast::<ACE_HEADER>() };
-                if header.AceFlags & INHERIT_ONLY_ACE.0 as u8 != 0
-                    || matches!(header.AceType, 1 | 6 | 10 | 12)
-                {
-                    continue;
-                }
-                if usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() {
-                    return Err(denied());
-                }
-                let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
-                let mutations = FILE_WRITE_DATA.0
-                    | FILE_APPEND_DATA.0
-                    | FILE_WRITE_EA.0
-                    | FILE_DELETE_CHILD.0
-                    | FILE_WRITE_ATTRIBUTES.0
-                    | DELETE.0
-                    | WRITE_DAC.0
-                    | WRITE_OWNER.0
-                    | GENERIC_ALL.0
-                    | GENERIC_WRITE.0;
-                if ace.Mask & mutations != 0
-                    && (!matches!(header.AceType, 0 | 9)
-                        || !trusted(PSID(std::ptr::from_ref(&ace.SidStart).cast_mut().cast())))
-                {
-                    return Err(denied());
-                }
+            .chain([HANDLE(self.file.as_raw_handle())])
+            .collect();
+        check_admin_handles(&handles, op)
+    }
+
+    /// Verifies that the installed directory itself (resolved from admin-only HKLM)
+    /// and the daemon executable are owned by Administrators/SYSTEM/TrustedInstaller
+    /// and disallow non-admin write/delete/modify ACEs. All ancestor directories are
+    /// already verified non-reparse by `lock_parents`.
+    pub(crate) fn require_protected_install(&self, op: &'static str) -> Result<(), Diagnostic> {
+        let mut handles = Vec::with_capacity(2);
+        if self.parents.len() > 1 {
+            if let Some(install_dir) = self.parents.last() {
+                handles.push(install_dir.0);
             }
         }
-        Ok(())
+        handles.push(HANDLE(self.file.as_raw_handle()));
+        check_admin_handles(&handles, op)
     }
+}
+
+fn check_admin_handles(handles: &[HANDLE], op: &'static str) -> Result<(), Diagnostic> {
+    struct LocalAllocation(*mut std::ffi::c_void);
+    impl Drop for LocalAllocation {
+        fn drop(&mut self) {
+            unsafe { LocalFree(Some(HLOCAL(self.0))) };
+        }
+    }
+    let mut trusted = PSID::default();
+    unsafe { ConvertStringSidToSidW(TRUSTED_INSTALLER, &mut trusted) }
+        .map_err(|error| Diagnostic::windows(op, error))?;
+    let _allocation = LocalAllocation(trusted.0);
+    let trusted = |sid: PSID| {
+        !sid.0.is_null()
+            && unsafe {
+                IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool()
+                    || IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
+                    || EqualSid(sid, trusted).is_ok()
+            }
+    };
+    let denied = || {
+        Diagnostic::new(op, DiagnosticKind::AccessDenied)
+            .detail("launch path permits changes by an untrusted principal")
+    };
+    for &handle in handles {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        let mut owner = PSID::default();
+        let mut acl = std::ptr::null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                Some(&mut acl),
+                None,
+                Some(&mut descriptor),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(Diagnostic::win32(op, status.0));
+        }
+        let _allocation = LocalAllocation(descriptor.0);
+        if acl.is_null() || !trusted(owner) {
+            return Err(denied());
+        }
+        for i in 0..u32::from(unsafe { (*acl).AceCount }) {
+            let mut raw = std::ptr::null_mut();
+            unsafe { GetAce(acl, i, &mut raw) }
+                .map_err(|error| Diagnostic::windows(op, error))?;
+            let header = unsafe { *raw.cast::<ACE_HEADER>() };
+            if header.AceFlags & INHERIT_ONLY_ACE.0 as u8 != 0
+                || matches!(header.AceType, 1 | 6 | 10 | 12)
+            {
+                continue;
+            }
+            if usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() {
+                return Err(denied());
+            }
+            let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+            let mutations = FILE_WRITE_DATA.0
+                | FILE_APPEND_DATA.0
+                | FILE_WRITE_EA.0
+                | FILE_DELETE_CHILD.0
+                | FILE_WRITE_ATTRIBUTES.0
+                | DELETE.0
+                | WRITE_DAC.0
+                | WRITE_OWNER.0
+                | GENERIC_ALL.0
+                | GENERIC_WRITE.0;
+            if ace.Mask & mutations != 0
+                && (!matches!(header.AceType, 0 | 9)
+                    || !trusted(PSID(std::ptr::from_ref(&ace.SidStart).cast_mut().cast())))
+            {
+                return Err(denied());
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) struct LocalFile {
@@ -512,8 +610,12 @@ mod tests {
     #[test]
     fn startup_commands_require_a_local_daemon_and_quote_the_executable() {
         assert_eq!(
-            run_command(Path::new(INSTALLED_DAEMON)).unwrap(),
-            format!(r#""{INSTALLED_DAEMON}" {USER_ARGS}"#)
+            run_command(Path::new(DEFAULT_INSTALLED_DAEMON)).unwrap(),
+            format!(r#""{DEFAULT_INSTALLED_DAEMON}" {USER_ARGS}"#)
+        );
+        assert_eq!(
+            run_command(Path::new(r"D:\Apps\MSI-Toolkit\msilt-daemon.exe")).unwrap(),
+            format!(r#""D:\Apps\MSI-Toolkit\msilt-daemon.exe" {USER_ARGS}"#)
         );
         for path in [
             r"msilt-daemon.exe",

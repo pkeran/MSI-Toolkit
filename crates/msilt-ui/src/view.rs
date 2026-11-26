@@ -513,11 +513,11 @@ pub fn notice(snapshot: &SystemSnapshot, connected: bool, demo: bool, installed:
     if !connected {
         return Some(Notice {
             level: 2,
-            title: "后台服务未运行".into(),
+            title: "后台未连接".into(),
             text: if installed {
-                "msilt-daemon 尚未运行；点击右侧可一键启动后台守护进程并自动连接。".into()
+                "暂时无法读取硬件状态。".into()
             } else {
-                "正在重连 \\\\.\\pipe\\MSIToolkit-IPC-v1；控件已禁用，请确认后台守护进程已启动。".into()
+                "请先启动后台服务。".into()
             },
             action: if installed { "启动服务".into() } else { "立即重连".into() },
         });
@@ -532,9 +532,9 @@ pub fn notice(snapshot: &SystemSnapshot, connected: bool, demo: bool, installed:
         }),
         EcWriteStatus::ConflictDetected => Some(Notice {
             level: 1,
-            title: "检测到官软占用".into(),
-            text: "MSI 官软正在竞争 EC 通道，写入已暂停。可在“系统与工具”逐项停用。".into(),
-            action: "查看停用器".into(),
+            title: "MSI 软件正在使用硬件".into(),
+            text: "部分控制已暂停，监控仍可用。".into(),
+            action: "管理软件".into(),
         }),
         EcWriteStatus::ReadOnlyFirmware => Some(Notice {
             level: 1,

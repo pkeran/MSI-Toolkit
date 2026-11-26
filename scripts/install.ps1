@@ -93,6 +93,8 @@ try {
 
 $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSI-Toolkit'
 New-Item -Path $regPath -Force | Out-Null
+New-Item -Path 'HKLM:\SOFTWARE\MSI-Toolkit' -Force | Out-Null
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\MSI-Toolkit' -Name 'InstallDir' -Value $InstallDir
 $uninstCmd = if ($hasNativeUninst) {
     "`"$(Join-Path $InstallDir 'uninstall.exe')`" --uninstall"
 } else {

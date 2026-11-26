@@ -25,17 +25,13 @@ export component SystemPage inherits Rectangle {
 
         // ── Group 1: Startup, Appearance & Connection ───────────────────────
         SettingsGroup {
-            title: "常规与开机自启";
+            title: "常规";
 
             SettingsCard {
                 glyph: "power";
-                title: "开机自动启动 MSI-Toolkit";
+                title: "登录时启动后台";
                 card-height: 58px;
 
-                Chip {
-                    text: AppState.startup-mode-label;
-                    level: AppState.startup-enabled ? 3 : 0;
-                }
                 Switch {
                     checked: AppState.startup-enabled;
                     enabled: AppState.interactive && !AppState.oem-busy;
@@ -60,8 +56,8 @@ export component SystemPage inherits Rectangle {
 
             SettingsCard {
                 glyph: "sliders";
-                title: "MSI-Toolkit 守护进程";
-                subtitle: "v" + AppState.daemon-version + " · IPC v1 · r" + AppState.revision;
+                title: "后台服务";
+                subtitle: AppState.connection-text;
                 card-height: 58px;
 
                 FluentButton {
@@ -83,13 +79,23 @@ export component SystemPage inherits Rectangle {
             SettingsCard {
                 glyph: "refresh";
                 title: "启动时自动检查更新";
-                subtitle: "从 GitHub Releases 检测新版本，仅在你确认后校验并升级";
                 card-height: 58px;
 
                 Switch {
                     checked: AppState.update-auto-check;
                     enabled: AppState.config-known && AppState.interactive;
                     toggled => { AppState.command(99, AppState.update-auto-check ? 0 : 1, 0); }
+                }
+            }
+
+            SettingsCard {
+                glyph: "eye";
+                title: "切换模式时显示桌面提示";
+                card-height: 58px;
+                Switch {
+                    checked: AppState.osd-enabled;
+                    enabled: AppState.config-known && AppState.interactive;
+                    toggled => { AppState.command(91, AppState.osd-enabled ? 0 : 1, 0); }
                 }
             }
 
@@ -124,16 +130,9 @@ export component SystemPage inherits Rectangle {
 
             SettingsCard {
                 glyph: "sliders";
-                title: "应用设置与维护";
-                subtitle: AppState.app-installed ? "已安装至 Program Files · 支持从系统「应用」列表标准卸载" : "当前以独立模式运行 · 可通过 MSI-Toolkit-Setup.exe 安装";
+                title: "应用维护";
                 card-height: 58px;
 
-                FluentButton {
-                    text: "初始向导";
-                    variant: 0;
-                    width: 88px;
-                    clicked => { AppState.command(101, 0, 0); }
-                }
                 FluentButton {
                     text: "配置目录";
                     variant: 0;

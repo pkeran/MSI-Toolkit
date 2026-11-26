@@ -15,6 +15,15 @@ fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if raw_args.first().is_some_and(|a| a.starts_with("--wizard-")) {
+        return match ops::wizard_action(&raw_args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("msilt-setup: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     // Build-time packer: msilt-setup.exe --pack <source_dir> <output_exe>
     if raw_args.first().map(String::as_str) == Some("--pack") {

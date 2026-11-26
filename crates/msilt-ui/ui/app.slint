@@ -9,7 +9,6 @@ import { ScrollView } from "std-widgets.slint";
 import { NavItem } from "components/nav_item.slint";
 import { StatusPill } from "components/status_pill.slint";
 import { Banner } from "components/banner.slint";
-import { OnboardingOverlay } from "components/onboarding.slint";
 import { DashboardPage } from "pages/dashboard.slint";
 import { PerformancePage } from "pages/performance.slint";
 import { DisplayPage } from "pages/display.slint";
@@ -341,10 +340,4 @@ export component AppWindow inherits Window {
         }
     }
 
-    if AppState.onboarding-open : OnboardingOverlay {
-        x: 0px;
-        y: 0px;
-        width: root.width;
-        height: root.height;
-    }
 }
