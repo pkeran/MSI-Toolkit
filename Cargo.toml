@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/msilt-core",
+    "crates/msilt-hal",
+    "crates/msilt-automation",
+    "crates/msilt-daemon",
+    "crates/msilt-ui",
+    "crates/msilt-cli",
+    "crates/msilt-probe",
+    "crates/msilt-setup",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+msilt-core = { path = "crates/msilt-core" }
+msilt-hal = { path = "crates/msilt-hal" }
+msilt-automation = { path = "crates/msilt-automation" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = 0
+incremental = false
+
+[profile.release-diagnostics]
+inherits = "release"
+debug = 1
+strip = "none"

@@ -1,0 +1,9 @@
+[package]
+name = "msilt-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+msilt-hal.workspace = true
+serde_json.workspace = true

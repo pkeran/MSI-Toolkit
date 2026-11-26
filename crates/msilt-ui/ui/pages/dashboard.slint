@@ -1,0 +1,215 @@
+// Page 0: Dashboard — responsive 2/3-column Magpie horizontal control grid +
+// expanding temperature trend card + tightly-docked telemetry strip.
+
+import { Theme } from "../theme.slint";
+import { AppState, Fmt } from "../state.slint";
+import { Switch, Slider, ComboBox } from "std-widgets.slint";
+import { CompactCard } from "../components/compact_card.slint";
+import { FluentButton } from "../components/fluent_button.slint";
+import { SettingsGroup } from "../components/settings_group.slint";
+import { Sparkline } from "../components/sparkline.slint";
+
+component DashboardControl inherits Rectangle {
+    in property <int> kind;
+    height: 68px;
+    horizontal-stretch: 1;
+
+    if kind == 0 : CompactCard {
+        glyph: "gauge";
+        title: "性能模式";
+        ComboBox {
+            width: 128px;
+            model: AppState.mode-labels;
+            current-index: AppState.mode-choice;
+            enabled: AppState.cap-performance && AppState.interactive;
+            selected(_) => { AppState.command(20, self.current-index, 0); }
+        }
+    }
+    if kind == 1 : CompactCard {
+        glyph: "pulse";
+        title: "Cooler Boost";
+        subtitle: AppState.cooler-boost-known ? (AppState.cooler-boost ? "已开启" : "关闭") : "—";
+        accent-border: AppState.cooler-boost ? Theme.warn : transparent;
+        Switch {
+            checked: AppState.cooler-boost;
+            enabled: AppState.cap-cooler && AppState.cooler-boost-known && AppState.interactive;
+            toggled => { AppState.command(21, AppState.cooler-boost ? 0 : 1, 0); }
+        }
+    }
+    if kind == 2 : CompactCard {
+        glyph: "battery";
+        title: "充电上限";
+        ComboBox {
+            width: 128px;
+            model: AppState.charge-labels;
+            current-index: AppState.charge-choice;
+            enabled: AppState.cap-charge && AppState.interactive;
+            selected(_) => { AppState.command(22, self.current-index, 0); }
+        }
+    }
+    if kind == 3 : CompactCard {
+        glyph: "display";
+        title: "刷新率";
+        ComboBox {
+            width: 128px;
+            model: AppState.refresh-labels;
+            current-index: AppState.refresh-choice;
+            enabled: AppState.cap-refresh && AppState.interactive;
+            selected(_) => { AppState.command(23, self.current-index, 0); }
+        }
+    }
+    if kind == 4 : CompactCard {
+        glyph: "lighting";
+        title: "屏幕亮度";
+        subtitle: Fmt.pct(AppState.brightness);
+        Slider {
+            width: 128px;
+            value: max(0, AppState.brightness);
+            minimum: 0;
+            maximum: 100;
+            step: 1;
+            enabled: AppState.cap-brightness && AppState.brightness >= 0 && AppState.interactive;
+            released(v) => { if Math.round(v) != AppState.brightness { AppState.command(24, Math.round(v), 0); } }
+        }
+    }
+    if kind == 5 : CompactCard {
+        glyph: "keyboard";
+        title: "键盘灯效";
+        subtitle: AppState.keyboard-conflict ? "官软占用" : "24 区 RGB";
+        accent-border: AppState.keyboard-conflict ? Theme.danger : transparent;
+        FluentButton {
+            text: "编辑";
+            variant: 0;
+            width: 92px;
+            clicked => { AppState.command(10, 4, 0); }
+        }
+    }
+}
+
+component TelemetryCell inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "—";
+    horizontal-stretch: 1;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 8px;
+        Text {
+            text: root.label;
+            font-size: Theme.font-caption;
+            color: Theme.text-2;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.value;
+            font-size: Theme.font-body;
+            font-weight: 500;
+            font-family: Theme.font-mono;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component DashboardPage inherits Rectangle {
+    property <int> columns: root.width >= 960px ? 3 : 2;
+    property <int> rows: 6 / columns;
+
+    VerticalLayout {
+        spacing: Theme.gap-group;
+
+        SettingsGroup {
+            title: "快捷控制";
+
+            VerticalLayout {
+                spacing: Theme.gap;
+                for r in root.rows : HorizontalLayout {
+                    spacing: Theme.gap;
+                    height: 68px;
+                    for c in root.columns : DashboardControl { kind: r * root.columns + c; }
+                }
+            }
+        }
+
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.gap-group-head;
+
+            HorizontalLayout {
+                height: 20px;
+                spacing: 12px;
+                Text {
+                    text: "温度与散热概览";
+                    font-size: Theme.font-group;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: 6px;
+                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; } }
+                    Text { text: "CPU " + Fmt.celsius(AppState.cpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: 6px;
+                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.warn; } }
+                    Text { text: "GPU " + Fmt.celsius(AppState.gpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                }
+                Text {
+                    text: "" + AppState.series-len + " 样本";
+                    font-size: Theme.font-caption;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                vertical-stretch: 1;
+                spacing: Theme.gap-card;
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    min-height: 156px;
+                    background: Theme.card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.card-stroke;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        Sparkline {
+                            vertical-stretch: 1;
+                            cpu-path: AppState.cpu-path;
+                            gpu-path: AppState.gpu-path;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 48px;
+                    background: Theme.card;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.card-stroke;
+
+                    HorizontalLayout {
+                        spacing: 0px;
+                        TelemetryCell { label: "CPU 风扇"; value: Fmt.rpm(AppState.cpu-rpm); }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
+                        TelemetryCell { label: "GPU 风扇"; value: Fmt.rpm(AppState.gpu-rpm); }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
+                        TelemetryCell { label: "GPU 功耗"; value: Fmt.watts(AppState.gpu-power-mw); }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
+                        TelemetryCell { label: "人工占用"; value: "" + AppState.override-count + " 项"; }
+                    }
+                }
+            }
+        }
+    }
+}

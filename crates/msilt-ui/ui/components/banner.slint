@@ -1,0 +1,65 @@
+// `Banner` — global persistent InfoBar strip with refined FluentButton action.
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+import { FluentButton } from "fluent_button.slint";
+
+export component Banner inherits Rectangle {
+    /// 1 = warn, 2 = danger, 3 = ok, 4 = info
+    in property <int> level: 1;
+    in property <string> title: "";
+    in property <string> text: "";
+    in property <string> action: "";
+    callback activate();
+
+    height: 40px;
+    horizontal-stretch: 1;
+    background: Theme.severity-surface(level);
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.severity-color(level).with-alpha(0.22);
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.level == 2 || root.level == 1 ? "warning"
+                     : root.level == 3 ? "check"
+                     : "info";
+                size: 16px;
+                tint: Theme.severity-icon-color(root.level);
+            }
+        }
+
+        Text {
+            text: root.title;
+            font-size: Theme.font-caption;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.text;
+            font-size: Theme.font-caption;
+            color: Theme.text-2;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        if root.action != "" : VerticalLayout {
+            alignment: center;
+            FluentButton {
+                text: root.action;
+                compact: true;
+                variant: 0;
+                clicked => { root.activate(); }
+            }
+        }
+    }
+}

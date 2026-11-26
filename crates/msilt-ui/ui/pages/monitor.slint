@@ -1,0 +1,208 @@
+// Page 6: Monitor & OSD — FluentSegmentBar sampling window + trend/table tabs
+// + Magpie OSD SettingsGroup with live "测试 OSD" button.
+
+import { Theme } from "../theme.slint";
+import { AppState, Fmt } from "../state.slint";
+import { Switch, SpinBox, TabWidget, StandardTableView } from "std-widgets.slint";
+import { Sparkline } from "../components/sparkline.slint";
+import { SettingsGroup } from "../components/settings_group.slint";
+import { SettingsCard } from "../components/settings_card.slint";
+import { FluentButton } from "../components/fluent_button.slint";
+import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { KeyValue, Chip } from "../components/primitives.slint";
+import { Icon } from "../icons.slint";
+
+export component MonitorPage inherits Rectangle {
+    VerticalLayout {
+        spacing: 18px;
+
+        // ── Telemetry toolbar + trend/table tabs ────────────────────────────
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.gap-card;
+
+            Rectangle {
+                height: 50px;
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 14px;
+                    spacing: 10px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { glyph: "pulse"; size: 18px; tint: Theme.text-2; }
+                    }
+
+                    Text {
+                        text: AppState.monitor-paused ? "采样已暂停" : "按需遥测 · 1 Hz";
+                        font-size: Theme.font-card-title;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            text: "更新 " + AppState.telemetry-age;
+                            level: AppState.monitor-paused ? 1 : 0;
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    VerticalLayout {
+                        alignment: center;
+                        FluentSegmentBar {
+                            width: 186px;
+                            compact: true;
+                            labels: ["1 分", "5 分", "15 分"];
+                            values: [1, 5, 15];
+                            current: AppState.monitor-window;
+                            picked(v) => { AppState.command(71, v, 0); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        FluentButton {
+                            text: AppState.monitor-paused ? "继续" : "暂停";
+                            variant: 0;
+                            compact: true;
+                            width: 76px;
+                            clicked => { AppState.command(70, 0, 0); }
+                        }
+                    }
+                }
+            }
+
+            TabWidget {
+                vertical-stretch: 1;
+                min-height: 230px;
+
+                Tab {
+                    title: "温度趋势";
+                    Rectangle {
+                        background: Theme.card;
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: Theme.card-stroke;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                height: 20px;
+                                spacing: 14px;
+                                HorizontalLayout {
+                                    horizontal-stretch: 0;
+                                    spacing: 6px;
+                                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; } }
+                                    Text { text: "CPU " + Fmt.celsius(AppState.cpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                                }
+                                HorizontalLayout {
+                                    horizontal-stretch: 0;
+                                    spacing: 6px;
+                                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.warn; } }
+                                    Text { text: "GPU " + Fmt.celsius(AppState.gpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                                }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                Text {
+                                    text: "" + AppState.series-len + " 个样本 · 缺值断线";
+                                    font-size: Theme.font-caption;
+                                    color: Theme.text-3;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Sparkline {
+                                vertical-stretch: 1;
+                                cpu-path: AppState.cpu-path;
+                                gpu-path: AppState.gpu-path;
+                            }
+
+                            HorizontalLayout {
+                                height: 24px;
+                                spacing: 14px;
+                                KeyValue { horizontal-stretch: 1; k: "CPU 风扇"; v: Fmt.rpm(AppState.cpu-rpm); }
+                                VerticalLayout { alignment: center; Rectangle { width: 1px; height: 14px; background: Theme.divider; } }
+                                KeyValue { horizontal-stretch: 1; k: "GPU 风扇"; v: Fmt.rpm(AppState.gpu-rpm); }
+                                VerticalLayout { alignment: center; Rectangle { width: 1px; height: 14px; background: Theme.divider; } }
+                                KeyValue { horizontal-stretch: 1; k: "GPU 功耗"; v: Fmt.watts(AppState.gpu-power-mw); }
+                            }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "最近样本";
+                    StandardTableView {
+                        columns: [
+                            { title: "UTC 时间" },
+                            { title: "CPU °C" },
+                            { title: "GPU °C" },
+                            { title: "CPU RPM" },
+                            { title: "GPU RPM" },
+                            { title: "GPU W" }
+                        ];
+                        rows: AppState.sample-table;
+                    }
+                }
+            }
+        }
+
+        // ── OSD settings (Magpie SettingsGroup, zero verbose copy) ──────────
+        SettingsGroup {
+            title: "桌面通知 (OSD)";
+
+            SettingsCard {
+                glyph: "display";
+                title: "启用 OSD 悬浮通知";
+                card-height: 56px;
+
+                FluentButton {
+                    text: "测试 OSD";
+                    glyph: "eye";
+                    variant: 2;
+                    compact: true;
+                    width: 96px;
+                    enabled: AppState.interactive;
+                    clicked => { AppState.command(95, 0, 0); }
+                }
+                Switch {
+                    checked: AppState.osd-enabled;
+                    enabled: AppState.config-known && AppState.interactive;
+                    toggled => { AppState.command(91, AppState.osd-enabled ? 0 : 1, 0); }
+                }
+            }
+
+            SettingsCard {
+                glyph: "clock";
+                title: "显示时长";
+                card-height: 56px;
+
+                SpinBox {
+                    width: 128px;
+                    value: AppState.osd-duration;
+                    minimum: 800;
+                    maximum: 5000;
+                    step-size: 100;
+                    enabled: AppState.config-known && AppState.interactive;
+                    edited(v) => { AppState.command(92, v, 0); }
+                }
+                Text {
+                    text: "ms";
+                    font-size: Theme.font-caption;
+                    font-family: Theme.font-mono;
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,8 @@
+[package]
+name = "msilt-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+msilt-core.workspace = true

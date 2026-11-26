@@ -1,0 +1,206 @@
+// Interactive HSV Color Picker — draggable 2D Saturation-Value color pad +
+// full-spectrum rainbow hue slider + quick swatches + live preview chip.
+
+import { Theme } from "../theme.slint";
+
+export component ColorPicker inherits Rectangle {
+    in property <float> hue: 0.0;
+    in property <float> sat: 0.9;
+    in property <float> val: 1.0;
+    in property <color> pure-hue: #FF0000;
+    in property <color> active-color: #FF1A1A;
+    in property <string> active-hex: "#FF1A1A";
+    in property <bool> enabled: true;
+    callback picked-hsv(h: float, s: float, v: float);
+    callback picked-hex(hex: string);
+
+    property <[color]> swatch-colors: [
+        #E62028, #F06424, #F0B429, #2EB872, #14B8A6,
+        #38BDF8, #2563EB, #7C3AED, #EC4899, #FFFFFF
+    ];
+    property <[string]> swatch-hex: [
+        "#E62028", "#F06424", "#F0B429", "#2EB872", "#14B8A6",
+        "#38BDF8", "#2563EB", "#7C3AED", "#EC4899", "#FFFFFF"
+    ];
+
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        // Top compact header: title + live swatch preview + hex tag
+        HorizontalLayout {
+            height: 22px;
+            spacing: 8px;
+
+            Text {
+                text: "颜色盘";
+                font-size: Theme.font-group;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    border-radius: Theme.radius-sm;
+                    background: root.active-color;
+                    border-width: 1px;
+                    border-color: Theme.stroke-strong;
+                }
+            }
+
+            Text {
+                text: root.active-hex;
+                font-size: Theme.font-caption;
+                font-family: Theme.font-mono;
+                color: Theme.text-2;
+                vertical-alignment: center;
+            }
+        }
+
+        // 2D Saturation (X) x Value (Y) interactive gradient pad
+        sv-pad := Rectangle {
+            height: 112px;
+            border-radius: Theme.radius-sm;
+            clip: true;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            background: @linear-gradient(90deg, #FFFFFF 0%, root.pure-hue 100%);
+
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                background: @linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, #000000 100%);
+            }
+
+            // Picker reticle (double ring for contrast on any luminance)
+            Rectangle {
+                x: clamp(root.sat * parent.width - 7px, 0px, max(0px, parent.width - 14px));
+                y: clamp((1.0 - root.val) * parent.height - 7px, 0px, max(0px, parent.height - 14px));
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                background: root.active-color;
+                border-width: 2px;
+                border-color: #FFFFFF;
+
+                Rectangle {
+                    x: -1px;
+                    y: -1px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: rgba(0, 0, 0, 0.55);
+                }
+            }
+
+            sv-ta := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: MouseCursor.crosshair;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.picked-hsv(
+                            root.hue,
+                            clamp(self.mouse-x / max(1px, sv-pad.width), 0.0, 1.0),
+                            clamp(1.0 - self.mouse-y / max(1px, sv-pad.height), 0.0, 1.0)
+                        );
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.picked-hsv(
+                            root.hue,
+                            clamp(self.mouse-x / max(1px, sv-pad.width), 0.0, 1.0),
+                            clamp(1.0 - self.mouse-y / max(1px, sv-pad.height), 0.0, 1.0)
+                        );
+                    }
+                }
+            }
+        }
+
+        // Full-spectrum Rainbow Hue slider
+        hue-bar := Rectangle {
+            height: 18px;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            clip: true;
+            background: @linear-gradient(90deg,
+                #FF0000 0%,
+                #FFFF00 16.7%,
+                #00FF00 33.3%,
+                #00FFFF 50%,
+                #0000FF 66.7%,
+                #FF00FF 83.3%,
+                #FF0000 100%);
+
+            Rectangle {
+                x: clamp((root.hue / 360.0) * max(0px, parent.width - 10px), 0px, max(0px, parent.width - 10px));
+                y: 1px;
+                width: 10px;
+                height: 16px;
+                border-radius: 3px;
+                background: #FFFFFF;
+                border-width: 1.5px;
+                border-color: #1A1A1A;
+            }
+
+            hue-ta := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.picked-hsv(
+                            clamp(self.mouse-x / max(1px, hue-bar.width), 0.0, 0.999) * 360.0,
+                            root.sat,
+                            root.val
+                        );
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.picked-hsv(
+                            clamp(self.mouse-x / max(1px, hue-bar.width), 0.0, 0.999) * 360.0,
+                            root.sat,
+                            root.val
+                        );
+                    }
+                }
+            }
+        }
+
+        // Quick curated swatch row
+        HorizontalLayout {
+            spacing: 6px;
+            for i in 10 : Rectangle {
+                horizontal-stretch: 1;
+                height: 20px;
+                border-radius: Theme.radius-sm;
+                background: root.swatch-colors[i];
+                border-width: sw-ta.has-hover ? 2px : 1px;
+                border-color: sw-ta.has-hover ? Theme.text : Theme.card-stroke;
+                animate border-color { duration: Theme.dur-hover; easing: ease-out; }
+
+                sw-ta := TouchArea {
+                    enabled: root.enabled;
+                    mouse-cursor: pointer;
+                    clicked => { root.picked-hex(root.swatch-hex[i]); }
+                }
+            }
+        }
+    }
+}

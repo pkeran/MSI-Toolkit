@@ -1,0 +1,161 @@
+// Page 1: Performance & Fans — direct segmented mode selector + Cooler Boost +
+// dual directly-draggable 6-knot fan curves (zero verbose descriptive prose).
+
+import { Theme } from "../theme.slint";
+import { AppState } from "../state.slint";
+import { Switch } from "std-widgets.slint";
+import { SettingsCard } from "../components/settings_card.slint";
+import { FluentButton } from "../components/fluent_button.slint";
+import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { FanCurveEditor } from "../components/fan_curve.slint";
+import { Chip } from "../components/primitives.slint";
+
+export component PerformancePage inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+
+    VerticalLayout {
+        spacing: 14px;
+
+        HorizontalLayout {
+            spacing: Theme.gap;
+            height: 62px;
+
+            SettingsCard {
+                horizontal-stretch: 3;
+                card-height: 62px;
+                glyph: "gauge";
+                title: "性能模式";
+
+                FluentSegmentBar {
+                    width: 296px;
+                    compact: true;
+                    labels: AppState.mode-labels.length > 0 ? AppState.mode-labels : ["省电", "静音", "平衡", "极致"];
+                    values: [0, 1, 2, 3];
+                    current: AppState.mode-choice;
+                    enabled: AppState.cap-performance && AppState.interactive && AppState.mode-labels.length > 0;
+                    picked(i) => { AppState.command(20, i, 0); }
+                }
+            }
+
+            SettingsCard {
+                horizontal-stretch: 2;
+                card-height: 62px;
+                glyph: "pulse";
+                title: "Cooler Boost";
+                accent-border: AppState.cooler-boost ? Theme.warn : transparent;
+
+                Switch {
+                    checked: AppState.cooler-boost;
+                    enabled: AppState.cap-cooler && AppState.cooler-boost-known && AppState.interactive;
+                    toggled => { AppState.command(21, AppState.cooler-boost ? 0 : 1, 0); }
+                }
+            }
+        }
+
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: Theme.gap-group-head;
+
+            HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
+
+                Text {
+                    text: "风扇曲线";
+                    font-size: Theme.font-group;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Chip {
+                        text: AppState.curve-dirty ? "未保存" : "已同步";
+                        level: AppState.curve-dirty ? 1 : 0;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    FluentButton {
+                        text: "出厂";
+                        compact: true;
+                        variant: 2;
+                        width: 60px;
+                        enabled: !AppState.curve-apply-pending;
+                        clicked => { AppState.command(33, AppState.curve-channel, 0); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    FluentButton {
+                        text: "静音";
+                        compact: true;
+                        variant: 2;
+                        width: 60px;
+                        enabled: !AppState.curve-apply-pending;
+                        clicked => { AppState.command(33, AppState.curve-channel, 1); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    FluentButton {
+                        text: "性能";
+                        compact: true;
+                        variant: 2;
+                        width: 60px;
+                        enabled: !AppState.curve-apply-pending;
+                        clicked => { AppState.command(33, AppState.curve-channel, 2); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.gap;
+                vertical-stretch: 1;
+
+                FanCurveEditor {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    title: "CPU 风扇";
+                    channel: 0;
+                    points: AppState.cpu-curve;
+                    max-duty: AppState.cpu-curve-max;
+                    live-temp: AppState.cpu-temp;
+                    live-rpm: AppState.cpu-rpm;
+                    live-duty: AppState.cpu-duty;
+                    readonly: !AppState.cpu-curve-editable;
+                    can-apply: AppState.cap-fan && AppState.ec-writable && AppState.interactive;
+                    pending: AppState.curve-apply-pending;
+                    dirty: AppState.cpu-curve-dirty;
+                    error: AppState.curve-channel == 0 ? AppState.curve-error : "";
+                    edit(i, d) => { AppState.curve-edit(0, i, d); }
+                    apply() => { AppState.command(31, 0, 0); }
+                    reset() => { AppState.command(32, 0, 0); }
+                }
+
+                FanCurveEditor {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    title: "GPU 风扇";
+                    channel: 1;
+                    points: AppState.gpu-curve;
+                    max-duty: AppState.gpu-curve-max;
+                    live-temp: AppState.gpu-temp;
+                    live-rpm: AppState.gpu-rpm;
+                    live-duty: AppState.gpu-duty;
+                    readonly: !AppState.gpu-curve-editable;
+                    can-apply: AppState.cap-fan && AppState.ec-writable && AppState.interactive;
+                    pending: AppState.curve-apply-pending;
+                    dirty: AppState.gpu-curve-dirty;
+                    error: AppState.curve-channel == 1 ? AppState.curve-error : "";
+                    edit(i, d) => { AppState.curve-edit(1, i, d); }
+                    apply() => { AppState.command(31, 1, 0); }
+                    reset() => { AppState.command(32, 1, 0); }
+                }
+            }
+        }
+    }
+}

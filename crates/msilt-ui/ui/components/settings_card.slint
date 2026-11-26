@@ -1,0 +1,85 @@
+// Magpie / WinUI SettingsCard: horizontal 3-part row (66px, 18px horizontal padding,
+// 18px icon-to-text gap, 20px text-to-control gap).
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component SettingsCard inherits Rectangle {
+    in property <string> glyph: "";
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <bool> enabled: true;
+    in property <bool> interactive: false;
+    in property <bool> muted: false;
+    in property <color> accent-border: transparent;
+    in property <length> card-height: Theme.card-h;
+    callback activated();
+
+    min-height: root.card-height;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    background: !root.enabled ? Theme.card-disabled
+              : (root.interactive && ta.pressed) ? Theme.card-pressed
+              : (root.interactive && ta.has-hover) ? Theme.card-hover
+              : Theme.card;
+    border-color: root.accent-border != transparent ? root.accent-border
+                : (root.interactive && ta.pressed) ? Theme.stroke-strong
+                : (root.interactive && ta.has-hover) ? Theme.card-stroke-hover
+                : Theme.card-stroke;
+    animate background { duration: Theme.dur-hover; easing: ease-out; }
+    animate border-color { duration: Theme.dur-hover; easing: ease-out; }
+
+    ta := TouchArea {
+        enabled: root.interactive && root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.activated(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-top: 11px;
+        padding-bottom: 11px;
+        spacing: 18px;
+
+        if root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 20px;
+                tint: root.enabled ? Theme.text-2 : Theme.text-disabled;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                font-size: Theme.font-card-title;
+                font-weight: 400;
+                color: root.enabled ? Theme.text : Theme.text-disabled;
+                overflow: elide;
+            }
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                font-size: Theme.font-caption;
+                color: !root.enabled ? Theme.text-disabled
+                     : root.muted ? Theme.text-3
+                     : Theme.text-2;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}

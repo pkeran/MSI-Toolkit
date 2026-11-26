@@ -1,0 +1,182 @@
+// Magpie / WinUI SettingsExpander + SettingsExpanderItem.
+// Collapsed state looks like a 64px SettingsCard with a subtle 32x32 chevron;
+// expanded state smoothly reveals indented sub-rows separated by 1px dividers.
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component SettingsExpanderItem inherits Rectangle {
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <length> item-height: 48px;
+
+    min-height: root.item-height;
+    background: transparent;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle { height: 1px; background: Theme.divider; }
+        HorizontalLayout {
+            padding-left: 56px;
+            padding-right: 18px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 16px;
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                if root.title != "" : Text {
+                    text: root.title;
+                    font-size: Theme.font-body;
+                    font-weight: 400;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                if root.subtitle != "" : Text {
+                    text: root.subtitle;
+                    font-size: Theme.font-caption;
+                    color: Theme.text-2;
+                    wrap: word-wrap;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 8px;
+                    @children
+                }
+            }
+        }
+    }
+}
+
+export component SettingsExpander inherits Rectangle {
+    in property <string> glyph: "";
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    in property <string> summary: "";
+    in-out property <bool> expanded: false;
+    in property <length> body-height: 96px;
+
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    clip: true;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        header := Rectangle {
+            height: Theme.card-h;
+            background: header-ta.pressed ? Theme.card-pressed
+                      : header-ta.has-hover ? Theme.card-hover
+                      : Theme.card;
+            animate background { duration: Theme.dur-hover; easing: ease-out; }
+
+            header-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.expanded = !root.expanded; }
+            }
+
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 10px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 18px;
+
+                if root.glyph != "" : VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: root.glyph;
+                        size: 20px;
+                        tint: Theme.text-2;
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: root.title;
+                        font-size: Theme.font-card-title;
+                        font-weight: 400;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    if root.subtitle != "" : Text {
+                        text: root.subtitle;
+                        font-size: Theme.font-caption;
+                        color: Theme.text-2;
+                        overflow: elide;
+                    }
+                }
+
+                if root.summary != "" : VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.summary;
+                        font-size: Theme.font-caption;
+                        color: Theme.text-2;
+                        vertical-alignment: center;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: Theme.radius;
+                        background: header-ta.has-hover ? Theme.control-hover : transparent;
+                        animate background { duration: Theme.dur-hover; easing: ease-out; }
+
+                        Path {
+                            x: 11px;
+                            y: 12px;
+                            width: 10px;
+                            height: 8px;
+                            viewbox-width: 10;
+                            viewbox-height: 8;
+                            commands: root.expanded ? "M 1 6 L 5 2 L 9 6" : "M 1 2 L 5 6 L 9 2";
+                            stroke: Theme.text-2;
+                            stroke-width: 1.5px;
+                            stroke-line-cap: round;
+                            stroke-line-join: round;
+                            fill: transparent;
+                        }
+                    }
+                }
+            }
+        }
+
+        body := Rectangle {
+            clip: true;
+            height: 0px;
+            background: Theme.card-secondary;
+            states [
+                opened when root.expanded : {
+                    height: root.body-height;
+                    in {
+                        animate height { duration: Theme.dur-expand; easing: cubic-bezier(0, 0, 0, 1); }
+                    }
+                    out {
+                        animate height { duration: Theme.dur-collapse; easing: cubic-bezier(1, 1, 0, 1); }
+                    }
+                }
+            ]
+            VerticalLayout {
+                spacing: 0px;
+                @children
+            }
+        }
+    }
+}

@@ -1,0 +1,122 @@
+// `RuleCard` — one automation rule with the three-column diagnosis that is the
+// core differentiator over the vendor tool:
+//   1. why it did not match, 2. which higher-priority lease suppressed it,
+//   3. which capability is missing and why.
+// Field enumerations are never hard-coded here; the page pulls them from the
+// daemon schema (see docs/AUTOMATION_SPEC.md §5 and U-03).
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+import { RuleRow, Fmt } from "../state.slint";
+import { Switch } from "std-widgets.slint";
+import { Chip, KeyValue } from "primitives.slint";
+
+export component RuleCard inherits Rectangle {
+    in property <RuleRow> rule;
+    in property <bool> enabled: true;
+    callback toggled(on: bool);
+
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: root.rule.result == 3 ? Theme.danger : Theme.stroke;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 3px;
+
+        // header
+        HorizontalLayout {
+            spacing: 6px;
+            height: 24px;
+            Text {
+                text: root.rule.name;
+                font-size: Theme.font-body;
+                font-weight: 600;
+                color: root.rule.enabled ? Theme.text : Theme.text-disabled;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Chip { text: "P" + root.rule.priority; level: 0; }
+            Chip {
+                text: Fmt.result-name(root.rule.result);
+                level: root.rule.result == 1 ? 3 : (root.rule.result == 2 ? 1 : (root.rule.result == 3 ? 2 : 0));
+            }
+            Switch {
+                checked: root.rule.enabled;
+                enabled: root.enabled;
+                toggled => { root.toggled(self.checked); }
+            }
+        }
+
+        // trigger / action
+        HorizontalLayout {
+            spacing: 6px;
+            height: 18px;
+            Icon { glyph: "bolt"; size: 16px; weight: 2px; tint: Theme.accent; }
+            Text {
+                text: root.rule.trigger;
+                font-size: Theme.font-caption;
+                color: Theme.text-2;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            height: 18px;
+            Icon { glyph: "play"; size: 16px; weight: 2px; tint: Theme.text-3; }
+            Text {
+                text: root.rule.actions;
+                font-size: Theme.font-caption;
+                color: Theme.text-2;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+
+        // three-column diagnosis
+        HorizontalLayout {
+            spacing: 8px;
+            height: 18px;
+            Text {
+                text: "未命中：" + (root.rule.diag-miss == "" ? "—" : root.rule.diag-miss);
+                font-size: Theme.font-micro;
+                color: root.rule.diag-miss == "" ? Theme.text-3 : Theme.warn;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: "被抑制：" + (root.rule.diag-suppressed == "" ? "—" : root.rule.diag-suppressed);
+                font-size: Theme.font-micro;
+                color: root.rule.diag-suppressed == "" ? Theme.text-3 : Theme.warn;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: "能力缺失：" + (root.rule.diag-capability == "" ? "—" : root.rule.diag-capability);
+                font-size: Theme.font-micro;
+                color: root.rule.diag-capability == "" ? Theme.text-3 : Theme.danger;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+
+        KeyValue {
+            k: "最近触发";
+            v: root.rule.last-run;
+            row-height: 16px;
+            mono: true;
+        }
+    }
+}

@@ -1,0 +1,270 @@
+// Page 3: Battery & Power — Modern 2026 AlDente / macOS Sequoia / Win11 24H2
+// precision dual-zone energy gauge with charge-limit threshold pin & IOCTL metrics.
+
+import { Theme } from "../theme.slint";
+import { AppState, Fmt } from "../state.slint";
+import { SettingsGroup } from "../components/settings_group.slint";
+import { SettingsCard } from "../components/settings_card.slint";
+import { FluentButton } from "../components/fluent_button.slint";
+import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { Chip } from "../components/primitives.slint";
+
+component BatteryStatCell inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "—";
+    in property <string> sub: "";
+    horizontal-stretch: 1;
+    background: transparent;
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        alignment: center;
+        spacing: 2px;
+
+        Text {
+            text: root.label;
+            font-size: Theme.font-micro;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        Text {
+            text: root.value;
+            font-size: Theme.font-title;
+            font-weight: 600;
+            font-family: Theme.font-mono;
+            color: Theme.text;
+            overflow: elide;
+        }
+        if root.sub != "" : Text {
+            text: root.sub;
+            font-size: Theme.font-micro;
+            font-family: Theme.font-mono;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+    }
+}
+
+export component BatteryPage inherits Rectangle {
+    VerticalLayout {
+        alignment: start;
+        spacing: Theme.gap-group;
+
+        // ── Group 1: Precision Dual-Zone Battery Energy Gauge ───────────────
+        SettingsGroup {
+            title: "电池状态";
+
+            Rectangle {
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 16px;
+
+                    // Header readout + power source + limit badge
+                    HorizontalLayout {
+                        height: 36px;
+                        spacing: 12px;
+
+                        Text {
+                            text: Fmt.pct(AppState.battery-percent);
+                            font-size: 30px;
+                            font-weight: 600;
+                            font-family: Theme.font-mono;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                glyph: "power";
+                                text: AppState.power-source < 0 ? "未知"
+                                    : (AppState.power-source == 0 ? "交流电" : "电池供电");
+                                level: AppState.power-source == 0 ? 3 : (AppState.power-source == 1 ? 1 : 0);
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                        if AppState.charge-limit > 0 : VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                text: AppState.charge-limit < 100
+                                    ? ("保护上限 " + Fmt.pct(AppState.charge-limit))
+                                    : "完全充电 100%";
+                                level: AppState.charge-limit < 100 ? 4 : 0;
+                            }
+                        }
+                    }
+
+                    // Precision 16px dual-zone linear energy track + threshold pin
+                    VerticalLayout {
+                        spacing: 6px;
+
+                        track-host := Rectangle {
+                            height: 24px;
+                            background: transparent;
+
+                            // Recessed precision energy channel
+                            track := Rectangle {
+                                x: 0px;
+                                y: 4px;
+                                width: parent.width;
+                                height: 16px;
+                                border-radius: Theme.radius;
+                                background: Theme.inset;
+                                border-width: 1px;
+                                border-color: Theme.card-stroke;
+                                clip: true;
+
+                                // Protected reserve ceiling band (charge-limit .. 100%)
+                                if AppState.charge-limit > 0 && AppState.charge-limit < 100 : Rectangle {
+                                    x: parent.width * (AppState.charge-limit / 100.0);
+                                    y: 0px;
+                                    width: parent.width * (1.0 - AppState.charge-limit / 100.0);
+                                    height: parent.height;
+                                    background: Theme.dark ? rgba(255, 255, 255, 0.03) : rgba(0, 0, 0, 0.03);
+                                }
+
+                                // Smooth active charge gradient fill
+                                if AppState.battery-percent > 0 : Rectangle {
+                                    x: 1px;
+                                    y: 1px;
+                                    width: max(6px, (parent.width - 2px) * clamp(AppState.battery-percent / 100.0, 0.0, 1.0));
+                                    height: parent.height - 2px;
+                                    border-radius: Theme.radius-sm;
+                                    background: AppState.battery-percent <= 20
+                                        ? @linear-gradient(90deg, #C83E3B 0%, #F87171 100%)
+                                        : AppState.power-source == 0
+                                            ? @linear-gradient(90deg, #1E9E6E 0%, #3ECF8E 100%)
+                                            : @linear-gradient(90deg, #2B87D1 0%, #58C4FF 100%);
+                                    animate width { duration: Theme.dur-nav; easing: ease-out; }
+                                }
+
+                                // Subtle internal hairline ticks at 20 / 40 / 60 / 80%
+                                for t in 4 : Rectangle {
+                                    x: parent.width * ((t + 1) * 0.2);
+                                    y: 1px;
+                                    width: 1px;
+                                    height: parent.height - 2px;
+                                    background: Theme.dark ? rgba(0, 0, 0, 0.24) : rgba(255, 255, 255, 0.42);
+                                }
+                            }
+
+                            // Precision luminous charge-limit threshold pin
+                            if AppState.charge-limit > 0 && AppState.charge-limit < 100 : Rectangle {
+                                x: clamp(track-host.width * (AppState.charge-limit / 100.0) - 1.5px, 2px, max(2px, track-host.width - 5px));
+                                y: 1px;
+                                width: 3px;
+                                height: 22px;
+                                border-radius: 1.5px;
+                                background: Theme.text;
+                                border-width: 0.5px;
+                                border-color: Theme.inset;
+                            }
+                        }
+
+                        // Calibrated scale ticks below track
+                        scale := Rectangle {
+                            height: 14px;
+                            background: transparent;
+
+                            Text {
+                                x: 0px;
+                                y: 0px;
+                                text: "0%";
+                                font-size: 10px;
+                                font-family: Theme.font-mono;
+                                color: Theme.text-3;
+                            }
+                            if AppState.charge-limit > 0 && AppState.charge-limit < 100 : Text {
+                                x: clamp(scale.width * (AppState.charge-limit / 100.0) - 28px, 26px, max(26px, scale.width - 96px));
+                                y: 0px;
+                                width: 56px;
+                                text: "上限 " + Fmt.pct(AppState.charge-limit);
+                                font-size: 10px;
+                                font-family: Theme.font-mono;
+                                color: Theme.text-2;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                x: scale.width - 36px;
+                                y: 0px;
+                                width: 36px;
+                                text: "100%";
+                                font-size: 10px;
+                                font-family: Theme.font-mono;
+                                color: Theme.text-3;
+                                horizontal-alignment: right;
+                            }
+                        }
+                    }
+
+                    // Direct clickable charge-limit control
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "充电上限";
+                            font-size: Theme.font-card-title;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        FluentSegmentBar {
+                            width: 240px;
+                            labels: AppState.charge-labels.length > 0 ? AppState.charge-labels : ["60%", "80%", "100%"];
+                            values: [0, 1, 2];
+                            current: AppState.charge-choice;
+                            enabled: AppState.cap-charge && AppState.interactive && AppState.charge-labels.length > 0;
+                            picked(i) => { AppState.command(22, i, 0); }
+                        }
+                    }
+                }
+            }
+
+            // Docked 2px below: real Battery IOCTL telemetry
+            Rectangle {
+                height: 70px;
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                HorizontalLayout {
+                    spacing: 0px;
+                    BatteryStatCell { label: "满充 / 设计容量"; value: AppState.battery-full; sub: "设计 " + AppState.battery-designed; }
+                    VerticalLayout { alignment: center; Rectangle { width: 1px; height: 36px; background: Theme.divider; } }
+                    BatteryStatCell { label: "健康度"; value: AppState.battery-health; sub: "循环 " + AppState.battery-cycles; }
+                    VerticalLayout { alignment: center; Rectangle { width: 1px; height: 36px; background: Theme.divider; } }
+                    BatteryStatCell { label: "实时功率"; value: AppState.battery-rate; sub: "电压 " + AppState.battery-voltage; }
+                }
+            }
+        }
+
+        // ── Group 2: Windows power settings link ────────────────────────────
+        SettingsGroup {
+            title: "系统电源";
+
+            SettingsCard {
+                glyph: "external";
+                title: "Windows 电源设置";
+                card-height: 58px;
+
+                FluentButton {
+                    text: "打开设置";
+                    glyph: "external";
+                    variant: 0;
+                    width: 108px;
+                    clicked => { AppState.command(63, 1, 0); }
+                }
+            }
+        }
+    }
+}

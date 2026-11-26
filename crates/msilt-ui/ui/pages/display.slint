@@ -1,0 +1,288 @@
+// Page 2: Display & Graphics — Windows 11 Settings-style neutral monitor preview +
+// G-Helper / Legion Toolkit clean GPU mode cards (zero cheesy AI flowchart boxes).
+
+import { Theme } from "../theme.slint";
+import { AppState, Fmt } from "../state.slint";
+import { ComboBox, Slider } from "std-widgets.slint";
+import { SettingsGroup } from "../components/settings_group.slint";
+import { SettingsCard } from "../components/settings_card.slint";
+import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { Chip } from "../components/primitives.slint";
+
+component GpuModeCard inherits Rectangle {
+    in property <string> title: "";
+    in property <string> spec: "";
+    in property <bool> active: false;
+    in property <bool> pending: false;
+
+    horizontal-stretch: 1;
+    height: 70px;
+    border-radius: Theme.radius-card;
+    background: root.active ? Theme.card : Theme.card-secondary;
+    border-width: 1px;
+    border-color: root.active ? Theme.stroke-strong : Theme.card-stroke;
+    clip: true;
+
+    // Quiet 3px left accent indicator only on the active GPU mode (Win11 NavigationView restraint)
+    if root.active : Rectangle {
+        x: 0px;
+        y: 16px;
+        width: 3px;
+        height: parent.height - 32px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 14px;
+        alignment: center;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.title;
+                font-size: Theme.font-card-title;
+                font-weight: root.active ? 600 : 400;
+                color: root.active ? Theme.text : Theme.text-2;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if root.active : VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.accent;
+                }
+            }
+            if root.pending && !root.active : Text {
+                text: "待重启";
+                font-size: Theme.font-micro;
+                color: Theme.warn;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.spec;
+            font-size: Theme.font-caption;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+    }
+}
+
+export component DisplayPage inherits Rectangle {
+    VerticalLayout {
+        alignment: start;
+        spacing: Theme.gap-group;
+
+        // ── Group 1: Clean Win11 Settings-style Display Preview + Controls ──
+        SettingsGroup {
+            title: "内置显示器";
+
+            // Minimalist neutral display preview card (brightness responds live)
+            Rectangle {
+                height: 124px;
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 20px;
+
+                    // Proportional 16:10 matte monitor preview tile (Win11 Display Settings aesthetic)
+                    Rectangle {
+                        width: 148px;
+                        height: 92px;
+                        border-radius: Theme.radius;
+                        background: #141518;
+                        border-width: 1.5px;
+                        border-color: Theme.dark ? rgba(255, 255, 255, 0.16) : #B8BDC7;
+                        clip: true;
+
+                        // Neutral slate desktop surface scaled live by brightness
+                        Rectangle {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            height: parent.height - 8px;
+                            border-radius: 3px;
+                            background: @linear-gradient(135deg, #2C3440 0%, #1E242D 100%);
+
+                            Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: parent.height;
+                                background: #0B0C0E.with-alpha(clamp(0.75 - (max(0, AppState.brightness) / 100.0) * 0.75, 0.0, 0.75));
+                            }
+
+                            Text {
+                                text: "1";
+                                font-size: 24px;
+                                font-weight: 600;
+                                font-family: Theme.font-ui;
+                                color: rgba(255, 255, 255, 0.88);
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            // Micro taskbar hint along bottom of preview
+                            Rectangle {
+                                x: 0px;
+                                y: parent.height - 5px;
+                                width: parent.width;
+                                height: 5px;
+                                background: rgba(0, 0, 0, 0.32);
+                            }
+                        }
+                    }
+
+                    // Crisp factual display readout beside monitor preview
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 6px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: Fmt.hz(AppState.refresh-hz);
+                                font-size: 22px;
+                                font-weight: 600;
+                                font-family: Theme.font-mono;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Chip {
+                                    text: "亮度 " + Fmt.pct(AppState.brightness);
+                                    level: 0;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
+
+                        Text {
+                            text: AppState.panel-info;
+                            font-size: Theme.font-caption;
+                            font-family: Theme.font-mono;
+                            color: Theme.text-2;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: AppState.color-profile;
+                            font-size: Theme.font-micro;
+                            font-family: Theme.font-mono;
+                            color: Theme.text-3;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            SettingsCard {
+                glyph: "refresh";
+                title: "刷新率";
+                card-height: 58px;
+
+                if AppState.refresh-labels.length >= 2 && AppState.refresh-labels.length <= 4 : FluentSegmentBar {
+                    width: 228px;
+                    compact: true;
+                    labels: AppState.refresh-labels;
+                    values: [0, 1, 2, 3];
+                    current: AppState.refresh-choice;
+                    enabled: AppState.cap-refresh && AppState.interactive;
+                    picked(i) => { AppState.command(23, i, 0); }
+                }
+
+                if AppState.refresh-labels.length < 2 || AppState.refresh-labels.length > 4 : ComboBox {
+                    width: 228px;
+                    model: AppState.refresh-labels;
+                    current-index: AppState.refresh-choice;
+                    enabled: AppState.cap-refresh && AppState.interactive;
+                    selected(_) => { AppState.command(23, self.current-index, 0); }
+                }
+            }
+
+            SettingsCard {
+                glyph: "lighting";
+                title: "屏幕亮度";
+                card-height: 58px;
+
+                HorizontalLayout {
+                    width: 228px;
+                    spacing: 8px;
+                    Text {
+                        text: Fmt.pct(AppState.brightness);
+                        width: 40px;
+                        font-size: Theme.font-body;
+                        font-family: Theme.font-mono;
+                        color: Theme.text-2;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    Slider {
+                        width: 180px;
+                        value: max(0, AppState.brightness);
+                        minimum: 0;
+                        maximum: 100;
+                        step: 1;
+                        enabled: AppState.cap-brightness && AppState.brightness >= 0 && AppState.interactive;
+                        released(v) => { if Math.round(v) != AppState.brightness { AppState.command(24, Math.round(v), 0); } }
+                    }
+                }
+            }
+
+            SettingsCard {
+                glyph: "display";
+                title: "色彩配置";
+                card-height: 58px;
+
+                ComboBox {
+                    width: 228px;
+                    model: AppState.color-profiles;
+                    current-index: AppState.color-profile-index;
+                    enabled: AppState.cap-color && AppState.interactive;
+                    selected(v) => { AppState.command-text(25, v); }
+                }
+            }
+        }
+
+        // ── Group 2: G-Helper / Legion Toolkit Clean GPU Working Mode ───────
+        SettingsGroup {
+            title: "显卡输出模式 (MUX)";
+            hint: "只读检测";
+
+            HorizontalLayout {
+                spacing: 8px;
+                GpuModeCard {
+                    title: "混合模式";
+                    spec: "MSHybrid · 按需调度";
+                    active: AppState.mux-current == 0;
+                    pending: AppState.mux-pending == 0;
+                }
+                GpuModeCard {
+                    title: "独显直连";
+                    spec: "dGPU 直连内屏";
+                    active: AppState.mux-current == 1;
+                    pending: AppState.mux-pending == 1;
+                }
+                GpuModeCard {
+                    title: "集显模式";
+                    spec: "仅 iGPU 低功耗";
+                    active: AppState.mux-current == 2;
+                    pending: AppState.mux-pending == 2;
+                }
+            }
+        }
+    }
+}

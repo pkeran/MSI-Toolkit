@@ -1,0 +1,57 @@
+// Magpie / WinUI SettingsGroup: 14px/600 group header + optional hint/description
+// + 8px gap + 2px tightly-stacked children.
+
+import { Theme } from "../theme.slint";
+
+export component SettingsGroup inherits Rectangle {
+    in property <string> title: "";
+    in property <string> hint: "";
+    in property <string> description: "";
+    in property <bool> enabled: true;
+
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+
+    VerticalLayout {
+        alignment: start;
+        spacing: Theme.gap-group-head;
+
+        if root.title != "" || root.description != "" : VerticalLayout {
+            spacing: 2px;
+            padding-left: 1px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.title;
+                    font-size: Theme.font-group;
+                    font-weight: 600;
+                    color: root.enabled ? Theme.text : Theme.text-disabled;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.hint != "" : Text {
+                    text: root.hint;
+                    font-size: Theme.font-caption;
+                    color: Theme.text-3;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+
+            if root.description != "" : Text {
+                text: root.description;
+                font-size: Theme.font-caption;
+                color: root.enabled ? Theme.text-2 : Theme.text-disabled;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.gap-card;
+            @children
+        }
+    }
+}

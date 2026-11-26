@@ -1,0 +1,15 @@
+[package]
+name = "msilt-automation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Domain contracts only: no Win32, no async runtime, no threads. The engine must
+# stay testable on any host, so the platform surface lives in `msilt-daemon`.
+msilt-core.workspace = true
+thiserror.workspace = true
+# Syntax only: `toml` parses `automation.toml` into a value tree, the strict
+# schema walk below owns every semantic rule (unknown keys, ranges, depth).
+# `display` (writer) is intentionally left off.
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }

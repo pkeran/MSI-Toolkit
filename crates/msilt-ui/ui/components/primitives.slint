@@ -1,0 +1,246 @@
+// Shared layout & typography helpers (Fluent Design 2 / Magpie rhythm).
+// All interactive widgets come from `std-widgets.slint`.
+
+import { Theme } from "../theme.slint";
+import { Icon, Glyphs } from "../icons.slint";
+import { Button } from "std-widgets.slint";
+
+/// Magpie group/section header: 14px SemiBold + optional icon + right-hand hint.
+export component SectionLabel inherits Rectangle {
+    in property <string> text: "";
+    in property <string> hint: "";
+    in property <string> glyph: "";
+
+    height: 20px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 6px;
+        if root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 16px;
+                tint: Theme.text-2;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.font-group;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        if root.hint != "" : Text {
+            text: root.hint;
+            font-size: Theme.font-caption;
+            color: Theme.text-3;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+    }
+}
+
+/// A labelled metric tile: caption label, monospaced value, unit.
+export component MetricTile inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "—";
+    in property <string> unit: "";
+    in property <int> level: 0;
+    in property <bool> dense: false;
+
+    background: Theme.card-secondary;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    height: dense ? 44px : 52px;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 1px;
+        Text {
+            text: root.label;
+            font-size: Theme.font-micro;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 4px;
+            Text {
+                text: root.value;
+                font-size: root.dense ? Theme.font-title : Theme.font-metric;
+                font-weight: 600;
+                font-family: Theme.font-mono;
+                color: root.level == 0 ? Theme.text : Theme.severity-color(root.level);
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+            if root.unit != "" : Text {
+                text: root.unit;
+                font-size: Theme.font-micro;
+                color: Theme.text-3;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+        }
+    }
+}
+
+/// `key ............ value` row.
+export component KeyValue inherits Rectangle {
+    in property <string> k: "";
+    in property <string> v: "";
+    in property <bool> mono: true;
+    in property <int> level: 0;
+    in property <length> row-height: 24px;
+
+    height: row-height;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text {
+            text: root.k;
+            font-size: Theme.font-caption;
+            color: Theme.text-2;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: root.v;
+            font-size: Theme.font-caption;
+            color: root.level == 0 ? Theme.text : Theme.severity-color(root.level);
+            font-family: root.mono ? Theme.font-mono : Theme.font-ui;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+    }
+}
+
+/// Segmented selector built from Fluent `Button` (checkable variant).
+export component SegmentBar inherits Rectangle {
+    in property <[string]> labels: [];
+    in property <[int]> values: [];
+    in property <[bool]> enabled-list: [];
+    in property <int> current: -1;
+    in property <bool> enabled: true;
+    callback picked(value: int);
+
+    background: transparent;
+    height: Theme.control-h;
+    horizontal-stretch: 1;
+
+    HorizontalLayout {
+        spacing: 4px;
+        for i in labels.length : Button {
+            text: labels[i];
+            checkable: true;
+            checked: i < values.length && values[i] == root.current;
+            enabled: root.enabled && (i >= enabled-list.length || enabled-list[i]);
+            horizontal-stretch: 1;
+            clicked => { root.picked(values[i]); }
+        }
+    }
+}
+
+/// Inline explanation row: icon + text.
+export component NoteRow inherits Rectangle {
+    in property <string> text: "";
+    in property <int> level: 4;
+    in property <string> glyph: "info";
+
+    min-height: 20px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 6px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 14px;
+                tint: root.level == 4 ? Theme.text-3 : Theme.severity-icon-color(root.level);
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.font-caption;
+            color: root.level == 4 ? Theme.text-3 : Theme.severity-color(root.level);
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+/// Flat icon-only button.
+export component IconButton inherits Button {
+    in property <string> glyph: "";
+    in property <length> box: 28px;
+    width: max(32px, box);
+    height: max(32px, box);
+    icon: Glyphs.image(glyph);
+    colorize-icon: true;
+    accessible-label: glyph;
+}
+
+/// Thin horizontal rule.
+export component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.divider;
+}
+
+/// Clean borderless-by-default Fluent 2 status tag; border appears only on alert/error (`level == 2`).
+export component Chip inherits Rectangle {
+    in property <string> text: "";
+    in property <int> level: 0;
+    in property <string> glyph: "";
+
+    height: 22px;
+    border-radius: Theme.radius;
+    background: root.level == 2 ? Theme.danger-surface : Theme.subtle-hover;
+    border-width: root.level == 2 ? 1px : 0px;
+    border-color: root.level == 2 ? Theme.danger.with-alpha(0.32) : transparent;
+    width: chip-layout.preferred-width;
+
+    chip-layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+
+        if root.level != 0 : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.severity-color(root.level);
+            }
+        }
+        if root.level == 0 && root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 12px;
+                tint: Theme.text-3;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.font-micro;
+            font-weight: 500;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+    }
+}

@@ -1,0 +1,241 @@
+// Concise, 1-card Fluent 2 First-Run Setup Overlay.
+// Shown automatically once on initial setup (never in --demo) and re-openable
+// anytime from "系统与工具 -> 初始设置向导".
+
+import { Theme } from "../theme.slint";
+import { AppState, Fmt } from "../state.slint";
+import { Switch } from "std-widgets.slint";
+import { FluentButton } from "fluent_button.slint";
+import { FluentSegmentBar } from "fluent_segment.slint";
+import { Chip } from "primitives.slint";
+import { Icon } from "../icons.slint";
+
+component SetupRow inherits Rectangle {
+    in property <string> glyph: "";
+    in property <string> title: "";
+    in property <string> subtitle: "";
+    height: 52px;
+    background: Theme.card-secondary;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        if root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon { glyph: root.glyph; size: 17px; tint: Theme.text-2; }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.font-body;
+                font-weight: 500;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                font-size: Theme.font-caption;
+                color: Theme.text-2;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}
+
+export component OnboardingOverlay inherits Rectangle {
+    background: rgba(0, 0, 0, 0.52);
+
+    // Block clicks to underlying workspace
+    TouchArea {}
+
+    dialog := Rectangle {
+        width: min(parent.width - 48px, 600px);
+        height: min(parent.height - 48px, 476px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.flyout;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.stroke-strong;
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+
+            // Header
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { glyph: "sliders"; size: 20px; tint: Theme.accent; }
+                    }
+                    Text {
+                        text: "欢迎使用 MSI-Toolkit";
+                        font-size: 18px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            text: "v" + AppState.ui-version;
+                            level: 0;
+                        }
+                    }
+                }
+                Text {
+                    text: "确认以下常用设置即可开始使用，之后随时可在「系统与工具」中调整。";
+                    font-size: Theme.font-caption;
+                    color: Theme.text-2;
+                }
+            }
+
+            // Detected hardware summary strip
+            Rectangle {
+                height: 36px;
+                background: Theme.inset;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { glyph: "chip"; size: 15px; tint: Theme.text-2; }
+                    }
+                    Text {
+                        text: "已识别硬件：" + AppState.board-id + " · EC " + AppState.ec-firmware + " · " + AppState.panel-info;
+                        font-size: Theme.font-caption;
+                        font-family: Theme.font-mono;
+                        color: Theme.text-2;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+
+            // Core setup rows
+            VerticalLayout {
+                spacing: 6px;
+
+                SetupRow {
+                    glyph: "display";
+                    title: "界面主题";
+                    subtitle: "自动跟随 Windows 深浅色或固定外观";
+
+                    FluentSegmentBar {
+                        width: 196px;
+                        compact: true;
+                        labels: ["跟随系统", "深色", "浅色"];
+                        values: [0, 1, 2];
+                        current: AppState.theme-choice;
+                        picked(v) => { AppState.command(82, v, 0); }
+                    }
+                }
+
+                SetupRow {
+                    glyph: "power";
+                    title: "开机自动启动后台守护进程";
+                    subtitle: AppState.startup-mode-label + " · 登录静默运行无需弹窗";
+
+                    Switch {
+                        checked: AppState.startup-enabled;
+                        enabled: AppState.interactive && !AppState.oem-busy;
+                        toggled => { AppState.command(83, AppState.startup-enabled ? 0 : 1, 0); }
+                    }
+                }
+
+                SetupRow {
+                    glyph: "refresh";
+                    title: "启动时自动检查新版本";
+                    subtitle: "从 GitHub Releases 校验 SHA-256 后一键升级";
+
+                    Switch {
+                        checked: AppState.update-auto-check;
+                        enabled: AppState.config-known && AppState.interactive;
+                        toggled => { AppState.command(99, AppState.update-auto-check ? 0 : 1, 0); }
+                    }
+                }
+
+                SetupRow {
+                    glyph: "eye";
+                    title: "切换模式时显示桌面 OSD 悬浮提示";
+                    subtitle: "纯软件 GDI+ 绘制，不唤醒独立显卡";
+
+                    Switch {
+                        checked: AppState.osd-enabled;
+                        enabled: AppState.config-known && AppState.interactive;
+                        toggled => { AppState.command(91, AppState.osd-enabled ? 0 : 1, 0); }
+                    }
+                }
+
+                SetupRow {
+                    glyph: "shield";
+                    title: AppState.oem-running-services > 0 ? "检测到 MSI 官方软件正在运行" : "MSI 官方软件冲突检查";
+                    subtitle: AppState.oem-running-services > 0
+                        ? ("当前 " + AppState.oem-running-services + " 项服务可能占用 EC 通道（停用会自动保存可逆备份）")
+                        : "未检测到冲突，硬件控制通道状态：" + Fmt.ec-name(AppState.ec-write-status);
+
+                    if AppState.oem-running-services > 0 : FluentButton {
+                        text: "禁启并停止";
+                        variant: 1;
+                        compact: true;
+                        width: 96px;
+                        enabled: AppState.interactive && !AppState.oem-busy;
+                        clicked => { AppState.command(87, 0, 0); }
+                    }
+                    if AppState.oem-running-services == 0 : Chip {
+                        text: "已就绪";
+                        level: 3;
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; background: transparent; }
+
+            // Footer buttons
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                FluentButton {
+                    text: "稍后再说";
+                    variant: 0;
+                    width: 96px;
+                    clicked => { AppState.command(100, 0, 0); }
+                }
+                FluentButton {
+                    text: "完成设置";
+                    variant: 1;
+                    width: 104px;
+                    clicked => { AppState.command(100, 1, 0); }
+                }
+            }
+        }
+    }
+}

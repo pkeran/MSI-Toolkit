@@ -1,0 +1,53 @@
+// Microsoft Fluent System Icons, 20px Regular. Original filled SVG outlines;
+// no synthetic strokes. Attribution and MIT license: assets/icons/LICENSE.
+import { Theme } from "theme.slint";
+
+export global Glyphs {
+    public pure function image(name: string) -> image {
+        if name == "dashboard" { return @image-url("assets/icons/home.svg"); }
+        if name == "gauge" { return @image-url("assets/icons/gauge.svg"); }
+        if name == "display" { return @image-url("assets/icons/desktop.svg"); }
+        if name == "battery" { return @image-url("assets/icons/battery_5.svg"); }
+        if name == "keyboard" { return @image-url("assets/icons/keyboard.svg"); }
+        if name == "bolt" { return @image-url("assets/icons/flowchart.svg"); }
+        if name == "pulse" { return @image-url("assets/icons/pulse.svg"); }
+        if name == "sliders" { return @image-url("assets/icons/settings.svg"); }
+        if name == "lighting" { return @image-url("assets/icons/brightness_high.svg"); }
+        if name == "chevron-left" { return @image-url("assets/icons/chevron_left.svg"); }
+        if name == "chevron-right" { return @image-url("assets/icons/chevron_right.svg"); }
+        if name == "check" { return @image-url("assets/icons/checkmark_circle.svg"); }
+        if name == "warning" { return @image-url("assets/icons/warning.svg"); }
+        if name == "refresh" { return @image-url("assets/icons/arrow_sync.svg"); }
+        if name == "power" { return @image-url("assets/icons/power.svg"); }
+        if name == "shield" { return @image-url("assets/icons/shield.svg"); }
+        if name == "plus" { return @image-url("assets/icons/add.svg"); }
+        if name == "minus" { return @image-url("assets/icons/subtract.svg"); }
+        if name == "play" { return @image-url("assets/icons/play.svg"); }
+        if name == "eye" { return @image-url("assets/icons/eye.svg"); }
+        if name == "lock" { return @image-url("assets/icons/lock_closed.svg"); }
+        if name == "chip" { return @image-url("assets/icons/developer_board.svg"); }
+        if name == "clock" { return @image-url("assets/icons/clock.svg"); }
+        if name == "thermometer" { return @image-url("assets/icons/temperature.svg"); }
+        if name == "layers" { return @image-url("assets/icons/layer.svg"); }
+        if name == "menu" { return @image-url("assets/icons/navigation.svg"); }
+        if name == "sidebar" { return @image-url("assets/icons/panel_left.svg"); }
+        if name == "dot" { return @image-url("assets/icons/circle_small.svg"); }
+        if name == "external" { return @image-url("assets/icons/open.svg"); }
+        if name == "trash" { return @image-url("assets/icons/delete.svg"); }
+        if name == "restore" { return @image-url("assets/icons/arrow_counterclockwise.svg"); }
+        return @image-url("assets/icons/info.svg");
+    }
+}
+
+export component Icon inherits Image {
+    in property <string> glyph: "info";
+    in property <length> size: 20px;
+    in property <color> tint: Theme.text-2;
+    in property <length> weight: 1px;
+    width: size;
+    height: size;
+    source: Glyphs.image(glyph);
+    colorize: tint;
+    image-fit: contain;
+    accessible-role: none;
+}

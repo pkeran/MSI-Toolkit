@@ -1,0 +1,55 @@
+// Win11 / Magpie borderless NavigationView item.
+// Selection is signalled by subtle surface fill + primary text + external 3x16
+// accent pill sliding vertically along the left edge.
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component NavItem inherits Rectangle {
+    in property <string> label: "";
+    in property <string> glyph: "info";
+    in property <bool> selected: false;
+    in property <bool> collapsed: false;
+    callback activated();
+
+    height: Theme.nav-item-h;
+    border-radius: Theme.radius;
+    background: ta.pressed ? Theme.nav-pressed
+              : root.selected ? Theme.nav-selected
+              : ta.has-hover ? Theme.nav-hover
+              : transparent;
+    animate background { duration: Theme.dur-hover; easing: ease-out; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.activated(); }
+    }
+
+    HorizontalLayout {
+        padding-left: root.collapsed ? 11px : 14px;
+        padding-right: root.collapsed ? 11px : 10px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 18px;
+                tint: root.selected ? Theme.text : Theme.text-2;
+            }
+        }
+
+        if !root.collapsed : Text {
+            text: root.label;
+            font-size: Theme.font-body;
+            font-weight: root.selected ? 500 : 400;
+            color: root.selected ? Theme.text : Theme.text-2;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
+}

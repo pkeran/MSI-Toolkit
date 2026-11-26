@@ -1,0 +1,297 @@
+// Shared state + view-model shapes for the whole MSI-Toolkit shell.
+// Rust is the single writer of hardware/system state; `-1` renders as `—`.
+
+import { Theme } from "theme.slint";
+
+// ── View-model records ──────────────────────────────────────────────────────
+
+export struct CurvePoint {
+    temp: int,
+    duty: int,
+    floor: int,
+    anchor: bool,
+}
+
+export struct AutoRuleRow {
+    id: string,
+    name: string,
+    enabled: bool,
+    priority: int,
+    trigger: string,
+    actions: string,
+    diagnostic: string,
+    active: bool,
+}
+
+export struct SampleRow {
+    time: string,
+    cpu: string,
+    gpu: string,
+    cpu-rpm: string,
+    gpu-rpm: string,
+    gpu-power: string,
+}
+
+export struct OemItemRow {
+    id: string,
+    name: string,
+    kind: string,
+    tier: int,
+    present: bool,
+    running: bool,
+    auto-start: bool,
+    startup-label: string,
+}
+
+export struct OemPkgRow {
+    id: int,
+    name: string,
+    version: string,
+    installed: bool,
+    can-uninstall: bool,
+    note: string,
+}
+
+// ── Formatting helpers (no fake zeros, ever) ────────────────────────────────
+
+export global Fmt {
+    public pure function n(v: int) -> string { v < 0 ? "—" : "" + v; }
+    public pure function nu(v: int, unit: string) -> string { v < 0 ? "—" : "" + v + " " + unit; }
+    public pure function pct(v: int) -> string { v < 0 ? "—" : "" + v + "%"; }
+    public pure function celsius(v: int) -> string { v < 0 ? "—" : "" + v + " °C"; }
+    public pure function rpm(v: int) -> string { v < 0 ? "—" : "" + v + " RPM"; }
+    public pure function hz(v: int) -> string { v < 0 ? "—" : "" + v + " Hz"; }
+    public pure function watts(mw: int) -> string { mw < 0 ? "—" : "" + Math.round(mw / 1000.0) + " W"; }
+
+    public pure function temp-level(t: int) -> int {
+        if t < 0 { return 0; }
+        if t >= 90 { return 2; }
+        if t >= 70 { return 1; }
+        return 3;
+    }
+
+    public pure function mode-name(m: int) -> string {
+        if m == 0 { return "超级省电"; }
+        if m == 1 { return "静音"; }
+        if m == 2 { return "平衡"; }
+        if m == 3 { return "极致性能"; }
+        return "—";
+    }
+
+    public pure function mux-name(m: int) -> string {
+        if m == 0 { return "混合模式"; }
+        if m == 1 { return "独显直连"; }
+        if m == 2 { return "集显模式"; }
+        return "—";
+    }
+
+    public pure function ec-name(s: int) -> string {
+        if s == 1 { return "只读固件"; }
+        if s == 2 { return "映射未验证"; }
+        if s == 3 { return "官软冲突"; }
+        if s == 4 { return "可写入"; }
+        if s == 5 { return "需要恢复"; }
+        return "不可用";
+    }
+}
+
+// ── Application state ───────────────────────────────────────────────────────
+
+export global AppState {
+    callback command(kind: int, a: int, b: int);
+    callback command-text(kind: int, value: string);
+    callback curve-edit(channel: int, index: int, duty: int);
+    callback zone-edit(index: int, additive: bool);
+    callback zone-hsv(h: float, s: float, v: float);
+
+    // ── shell ──
+    in-out property <int> page: 0;
+    in-out property <bool> nav-collapsed: false;
+    in-out property <int> columns: 3;
+    in-out property <bool> dark: true;
+    in-out property <int> theme-choice: 0; // 0 = System, 1 = Dark, 2 = Light
+    in-out property <bool> reduced-motion: false;
+
+    // ── connection ──
+    in-out property <int> connection: 0; // 0 connecting, 1 live, 2 disconnected, 3 demo
+    out property <bool> interactive: (connection == 1 || connection == 3) && !request-pending && !diagnostic;
+    in-out property <bool> request-pending: false;
+    in-out property <bool> diagnostic: false;
+    in-out property <string> connection-text: "正在连接 msilt-daemon…";
+    in-out property <bool> demo: false;
+    in-out property <string> revision: "0";
+    in-out property <string> daemon-version: "0.1.0";
+    in-out property <string> ui-version: "0.1.0";
+    in-out property <int> session-seconds: 0;
+
+    // ── banner ──
+    in-out property <bool> banner-visible: false;
+    in-out property <int> banner-level: 1;
+    in-out property <string> banner-title: "";
+    in-out property <string> banner-text: "";
+    in-out property <string> banner-action: "";
+
+    // ── capability gates ──
+    in-out property <bool> cap-performance: false;
+    in-out property <bool> cap-fan: false;
+    in-out property <bool> cap-cooler: false;
+    in-out property <bool> cap-charge: false;
+    in-out property <bool> cap-refresh: false;
+    in-out property <bool> cap-brightness: false;
+    in-out property <bool> cap-color: false;
+    in-out property <bool> cap-keyboard: false;
+    in-out property <bool> cap-mux: false;
+    in-out property <bool> cap-telemetry: false;
+    in-out property <int> ec-write-status: 0;
+    in-out property <bool> ec-writable: false;
+
+    // ── telemetry (-1 == no reading) ──
+    in-out property <int> cpu-temp: -1;
+    in-out property <int> gpu-temp: -1;
+    in-out property <int> cpu-rpm: -1;
+    in-out property <int> gpu-rpm: -1;
+    in-out property <int> cpu-duty: -1;
+    in-out property <int> gpu-duty: -1;
+    in-out property <int> gpu-power-mw: -1;
+    in-out property <string> telemetry-age: "—";
+
+    // ── hardware ──
+    in-out property <string> board-id: "—";
+    in-out property <string> ec-firmware: "—";
+    in-out property <int> performance-mode: -1;
+    in-out property <[int]> supported-modes: [];
+    in-out property <[string]> mode-labels: [];
+    in-out property <int> mode-choice: -1;
+    in-out property <bool> cooler-boost: false;
+    in-out property <bool> cooler-boost-known: false;
+    in-out property <int> power-source: -1;
+    in-out property <int> battery-percent: -1;
+    in-out property <string> battery-designed: "—";
+    in-out property <string> battery-full: "—";
+    in-out property <string> battery-health: "—";
+    in-out property <string> battery-voltage: "—";
+    in-out property <string> battery-rate: "—";
+    in-out property <string> battery-cycles: "—";
+    in-out property <int> charge-limit: -1;
+    in-out property <[int]> charge-limits: [];
+    in-out property <[string]> charge-labels: [];
+    in-out property <int> charge-choice: -1;
+    in-out property <int> refresh-hz: -1;
+    in-out property <[int]> refresh-rates: [];
+    in-out property <[string]> refresh-labels: [];
+    in-out property <int> refresh-choice: -1;
+    in-out property <int> brightness: -1;
+    in-out property <string> color-profile: "—";
+    in-out property <int> color-profile-index: -1;
+    in-out property <[string]> color-profiles: [];
+    in-out property <int> mux-current: -1;
+    in-out property <int> mux-pending: -1;
+    in-out property <string> panel-info: "—";
+    in-out property <int> override-count: 0;
+
+    // ── fan curves ──
+    in-out property <[CurvePoint]> cpu-curve: [];
+    in-out property <[CurvePoint]> gpu-curve: [];
+    in-out property <int> curve-channel: 0;
+    in-out property <bool> curve-dirty: false;
+    in-out property <string> curve-error: "";
+    in-out property <int> curve-max-duty: 100;
+    in-out property <int> cpu-curve-max: 100;
+    in-out property <int> gpu-curve-max: 100;
+    in-out property <bool> cpu-curve-dirty: false;
+    in-out property <bool> gpu-curve-dirty: false;
+    in-out property <bool> cpu-curve-editable: false;
+    in-out property <bool> gpu-curve-editable: false;
+    in-out property <bool> curve-apply-pending: false;
+
+    // ── keyboard ──
+    in-out property <[color]> zones: [];
+    in-out property <[bool]> zone-selected: [];
+    in-out property <int> zone-brightness: 3;
+    in-out property <string> zone-color-hex: "#FF1A1A";
+    in-out property <float> zone-hue: 0.0;
+    in-out property <float> zone-sat: 0.90;
+    in-out property <float> zone-val: 1.0;
+    in-out property <color> zone-pure-hue: #FF0000;
+    in-out property <color> zone-active-color: #FF1A1A;
+    in-out property <string> keyboard-device: "—";
+    in-out property <string> keyboard-layout: "24 区 RGB";
+    in-out property <bool> keyboard-conflict: false;
+    in-out property <string> keyboard-submit: "";
+
+    // ── automation ──
+    in-out property <[AutoRuleRow]> auto-rules: [];
+    in-out property <bool> automation-enabled: false;
+    in-out property <bool> config-known: false;
+    in-out property <string> override-policy: "—";
+    in-out property <string> automation-summary: "—";
+    in-out property <string> dry-run-result: "";
+
+    // ── monitor ──
+    in-out property <[SampleRow]> samples: [];
+    in-out property <[[StandardListViewItem]]> sample-table: [];
+    in-out property <string> cpu-path: "";
+    in-out property <string> gpu-path: "";
+    in-out property <int> series-len: 0;
+    in-out property <int> monitor-window: 5;
+    in-out property <bool> monitor-paused: false;
+    in-out property <int> osd-duration: 1800;
+    in-out property <bool> osd-enabled: false;
+    in-out property <bool> gpu-telemetry: false;
+
+    // ── system, startup & MSI OEM manager ──
+    in-out property <bool> startup-enabled: false;
+    in-out property <string> startup-mode-label: "未检测";
+    in-out property <string> startup-detail: "开机后在后台静默启动守护进程";
+    in-out property <bool> startup-installed: false;
+
+    in-out property <bool> oem-elevated: false;
+    in-out property <bool> oem-has-backup: false;
+    in-out property <bool> oem-protected-intact: true;
+    in-out property <int> oem-running-services: 0;
+    in-out property <int> oem-running-procs: 0;
+    in-out property <string> oem-proc-ram: "0 MiB";
+    in-out property <string> oem-proc-summary: "未检测到运行中的 MSI 官软进程";
+    in-out property <string> oem-summary: "点击刷新以读取当前本机 MSI 官方软件状态";
+    in-out property <int> oem-scope: 0; // 0=All, 1=Core, 2=Lighting, 3=TrueColor
+    in-out property <[OemItemRow]> oem-items: [];
+    in-out property <[OemPkgRow]> oem-packages: [];
+    in-out property <bool> oem-busy: false;
+    in-out property <int> oem-confirm-uninstall: -1;
+
+    in-out property <string> diagnostics-hint: "";
+    in-out property <string> render-backend: "renderer-software";
+    in-out property <int> first-frame-ms: -1;
+    in-out property <int> private-kib: -1;
+
+    // ── software updates & onboarding ──
+    in-out property <int> update-state: 0; // 0=idle, 1=checking, 2=up-to-date, 3=available, 4=installing, 5=error
+    in-out property <string> update-latest: "";
+    in-out property <string> update-status-text: "当前 v0.1.0";
+    in-out property <bool> update-auto-check: true;
+    in-out property <bool> onboarding-open: false;
+    in-out property <bool> app-installed: false;
+
+    // ── navigation helpers ──
+    public pure function page-title() -> string {
+        if page == 0 { return "总览"; }
+        if page == 1 { return "性能与风扇"; }
+        if page == 2 { return "显卡与显示"; }
+        if page == 3 { return "电池与电源"; }
+        if page == 4 { return "键盘灯效"; }
+        if page == 5 { return "自动化"; }
+        if page == 6 { return "监控与 OSD"; }
+        return "系统与工具";
+    }
+
+    public pure function page-caption() -> string {
+        if page == 0 { return "常用硬件控制与实时散热趋势"; }
+        if page == 1 { return "性能档位 · 固定温度节点曲线 · 回读验证"; }
+        if page == 2 { return "显示模式、背光亮度与 Windows 色彩配置"; }
+        if page == 3 { return "电池健康度、实时功率与充电保护策略"; }
+        if page == 4 { return "24 区颜色涂色、软件亮度与硬件提交"; }
+        if page == 5 { return "事件驱动规则、试跑诊断与人工优先权"; }
+        if page == 6 { return "按需遥测、历史采样与纯软件 OSD 通知"; }
+        return "开机自启、MSI 官方软件控制、卸载与硬件诊断";
+    }
+}

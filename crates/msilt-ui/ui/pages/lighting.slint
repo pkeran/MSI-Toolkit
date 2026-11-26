@@ -1,0 +1,180 @@
+// Page 4: Keyboard Lighting — Wootility-inspired physical MSI Vector 17 HX
+// keyboard chassis on top + interactive 2D HSV Color Palette & Brightness deck below.
+
+import { Theme } from "../theme.slint";
+import { AppState } from "../state.slint";
+import { ZoneMatrix } from "../components/zone_matrix.slint";
+import { ColorPicker } from "../components/color_picker.slint";
+import { FluentButton } from "../components/fluent_button.slint";
+import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { InfoBar } from "../components/info_bar.slint";
+import { SectionLabel, KeyValue, Rule } from "../components/primitives.slint";
+
+component PresetChipButton inherits Rectangle {
+    in property <string> label: "";
+    in property <color> dot: #FFFFFF;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    horizontal-stretch: 1;
+    height: 32px;
+    border-radius: Theme.radius;
+    background: !root.enabled ? Theme.btn-disabled
+              : ta.pressed ? Theme.btn-pressed
+              : ta.has-hover ? Theme.btn-hover
+              : Theme.btn-bg;
+    border-width: 1px;
+    border-color: Theme.btn-border;
+    animate background { duration: Theme.dur-hover; easing: ease-out; }
+    clip: true;
+
+    if root.enabled && !ta.pressed : Rectangle {
+        x: 1px;
+        y: 1px;
+        width: max(0px, parent.width - 2px);
+        height: 1px;
+        background: Theme.btn-bevel-top;
+    }
+    if root.enabled && !ta.pressed : Rectangle {
+        x: 1px;
+        y: max(0px, parent.height - 2px);
+        width: max(0px, parent.width - 2px);
+        height: 1px;
+        background: Theme.btn-bevel-bottom;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: 8px;
+        padding-right: 8px;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 3px;
+                background: root.dot;
+                border-width: 1px;
+                border-color: Theme.stroke-strong;
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: Theme.font-caption;
+            color: root.enabled ? Theme.text : Theme.text-disabled;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component LightingPage inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+
+    property <[string]> brightness-labels: ["关", "低", "中", "高"];
+    property <[int]> brightness-values: [0, 1, 2, 3];
+
+    VerticalLayout {
+        spacing: 14px;
+        alignment: start;
+
+        // ── Hero: Physical MSI Vector 17 HX full-size keyboard ──────────────
+        ZoneMatrix {
+            zones: AppState.zones;
+            selected: AppState.zone-selected;
+            enabled: AppState.cap-keyboard && !AppState.keyboard-conflict;
+            conflict: AppState.keyboard-conflict;
+            toggle(i, additive) => { AppState.zone-edit(i, additive); }
+            select-all() => { AppState.command(43, 1, 0); }
+            select-none() => { AppState.command(43, 0, 0); }
+        }
+
+        if AppState.keyboard-conflict : InfoBar {
+            level: 2;
+            text: "检测到 LEDKeeper2 / Mystic_Light_Service 占用，请先在“系统与工具”停用官软灯效服务。";
+        }
+
+        // ── Bottom 2-column control deck (HSV Color Pad + Brightness/Apply) ─
+        HorizontalLayout {
+            spacing: 12px;
+
+            ColorPicker {
+                horizontal-stretch: 3;
+                hue: AppState.zone-hue;
+                sat: AppState.zone-sat;
+                val: AppState.zone-val;
+                pure-hue: AppState.zone-pure-hue;
+                active-color: AppState.zone-active-color;
+                active-hex: AppState.zone-color-hex;
+                enabled: AppState.cap-keyboard && !AppState.keyboard-conflict;
+                picked-hsv(h, s, v) => { AppState.zone-hsv(h, s, v); }
+                picked-hex(hex) => { AppState.command-text(45, hex); }
+            }
+
+            Rectangle {
+                horizontal-stretch: 2;
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+
+                    SectionLabel { text: "亮度"; glyph: "lighting"; hint: "" + AppState.zone-brightness + " / 3"; }
+                    FluentSegmentBar {
+                        labels: root.brightness-labels;
+                        values: root.brightness-values;
+                        current: AppState.zone-brightness;
+                        enabled: AppState.cap-keyboard;
+                        picked(v) => { AppState.command(44, v, 0); }
+                    }
+
+                    SectionLabel { text: "快速预设"; glyph: "bolt"; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 0, 0); } }
+                        PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 1, 0); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 2, 0); } }
+                        PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 3, 0); } }
+                    }
+
+                    Rule { }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        KeyValue {
+                            horizontal-stretch: 1;
+                            k: AppState.keyboard-device;
+                            v: AppState.keyboard-submit == "" ? "就绪" : AppState.keyboard-submit;
+                            mono: false;
+                            row-height: 22px;
+                        }
+                    }
+
+                    FluentButton {
+                        text: "应用到键盘";
+                        glyph: "check";
+                        variant: 1;
+                        height: 34px;
+                        enabled: AppState.cap-keyboard && !AppState.keyboard-conflict && AppState.interactive;
+                        clicked => { AppState.command(41, 0, 0); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,115 @@
+// Exquisite WinUI 2.8.7 / Blinue Magpie / Linear FluentButton.
+// Variants:
+//   0 = Standard     (elevated control fill + 1px top specular / bottom elevation bevel)
+//   1 = Accent       (primary action, high-contrast on-accent text)
+//   2 = Subtle       (borderless transparent -> 83ms subtle hover)
+//   3 = Critical     (solid Crimson destructive confirmation action)
+//   4 = DangerSubtle (restrained tinted danger button with hairline crimson border)
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component FluentButton inherits Rectangle {
+    in property <string> text: "";
+    in property <string> glyph: "";
+    in property <int> variant: 0;
+    in property <bool> enabled: true;
+    in property <bool> compact: false;
+    callback clicked();
+
+    height: root.compact ? 28px : Theme.control-h;
+    preferred-width: max(root.compact ? 48px : 64px, btn-layout.preferred-width);
+    border-radius: Theme.radius;
+    border-width: root.variant == 2 ? 0px : 1px;
+    clip: true;
+
+    background: !root.enabled
+        ? (root.variant == 2 ? transparent : Theme.btn-disabled)
+        : root.variant == 1
+            ? (ta.pressed ? Theme.accent-pressed : (ta.has-hover ? Theme.accent-hover : Theme.accent))
+        : root.variant == 2
+            ? (ta.pressed ? Theme.subtle-pressed : (ta.has-hover ? Theme.subtle-hover : transparent))
+        : root.variant == 3
+            ? (ta.pressed ? Theme.critical-pressed : (ta.has-hover ? Theme.critical-hover : Theme.critical-bg))
+        : root.variant == 4
+            ? (ta.pressed ? Theme.danger-btn-pressed : (ta.has-hover ? Theme.danger-btn-hover : Theme.danger-btn-bg))
+        : (ta.pressed ? Theme.btn-pressed : (ta.has-hover ? Theme.btn-hover : Theme.btn-bg));
+
+    border-color: !root.enabled
+        ? Theme.card-stroke
+        : root.variant == 1
+            ? (ta.pressed ? Theme.accent-pressed : Theme.accent-bevel-bottom)
+        : root.variant == 3
+            ? Theme.critical-pressed
+        : root.variant == 4
+            ? Theme.danger-btn-border
+        : Theme.btn-border;
+
+    animate background { duration: Theme.dur-hover; easing: ease-out; }
+    animate border-color { duration: Theme.dur-hover; easing: ease-out; }
+
+    accessible-role: button;
+    accessible-label: root.text != "" ? root.text : root.glyph;
+
+    // 1px top specular catchlight
+    if root.enabled && root.variant != 2 && root.variant != 4 && !ta.pressed : Rectangle {
+        x: 1px;
+        y: 1px;
+        width: max(0px, parent.width - 2px);
+        height: 1px;
+        background: root.variant == 1 ? Theme.accent-bevel-top
+                  : root.variant == 3 ? rgba(255, 255, 255, 0.14)
+                  : Theme.btn-bevel-top;
+    }
+
+    // 1px bottom elevation rim
+    if root.enabled && root.variant != 2 && root.variant != 4 && !ta.pressed : Rectangle {
+        x: 1px;
+        y: max(0px, parent.height - 2px);
+        width: max(0px, parent.width - 2px);
+        height: 1px;
+        background: root.variant == 1 ? Theme.accent-bevel-bottom
+                  : root.variant == 3 ? rgba(0, 0, 0, 0.18)
+                  : Theme.btn-bevel-bottom;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    btn-layout := HorizontalLayout {
+        padding-left: root.compact ? 10px : 12px;
+        padding-right: root.compact ? 10px : 12px;
+        spacing: 6px;
+        alignment: center;
+
+        if root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 14px;
+                tint: !root.enabled ? Theme.text-disabled
+                    : root.variant == 1 ? Theme.on-accent
+                    : root.variant == 3 ? Theme.on-critical
+                    : root.variant == 4 ? Theme.danger
+                    : (root.variant == 2 ? Theme.text-2 : Theme.text);
+            }
+        }
+
+        if root.text != "" : Text {
+            text: root.text;
+            font-size: root.compact ? Theme.font-caption : Theme.font-body;
+            font-weight: root.variant == 1 || root.variant == 3 || root.variant == 4 ? 500 : 400;
+            color: !root.enabled ? Theme.text-disabled
+                 : root.variant == 1 ? Theme.on-accent
+                 : root.variant == 3 ? Theme.on-critical
+                 : root.variant == 4 ? Theme.danger
+                 : Theme.text;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}

@@ -1,0 +1,299 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "urn:msilt:ec-map:ms-17s3:1",
+    "title": "MS-17S3 Phase 0 EC evidence and read-only guard policy",
+    "description": "Validate the entire document with this schema. Pass only guardMap to EcMap::parse_json. Research metadata does not grant write access.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["schema", "schemaVersion", "verified", "identity", "sources", "guardMap", "writePolicy", "capabilityEvidence", "registers", "telemetry", "fanCurves"],
+    "properties": {
+      "schema": { "type": "object" },
+      "schemaVersion": { "const": 1 },
+      "verified": { "const": false },
+      "identity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "boardId", "boardRevision", "biosVersion", "ecFirmware", "ecResearchPrefix", "wmiVersion", "dsdtSha256"],
+        "properties": {
+          "model": { "const": "Vector 17 HX AI A2XWJG" },
+          "boardId": { "const": "MS-17S3" },
+          "boardRevision": { "const": "REV:1.0" },
+          "biosVersion": { "const": "E17S3IMS.112" },
+          "ecFirmware": { "const": "17S3EMS1.107" },
+          "ecResearchPrefix": { "const": "17S3EMS1.1" },
+          "wmiVersion": { "const": "2.8" },
+          "dsdtSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      },
+      "sources": {
+        "type": "object",
+        "required": ["aml", "oemLog", "scenario", "generalSettings", "g2_10", "brief"],
+        "propertyNames": { "$ref": "#/$defs/sourceId" },
+        "additionalProperties": { "type": "string", "minLength": 1 }
+      },
+      "guardMap": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "boardId", "firmwarePrefixes", "denyWrite", "writeAllowlist", "fanCurves"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "boardId": { "const": "MS-17S3" },
+          "firmwarePrefixes": { "const": ["17S3EMS1.107"] },
+          "denyWrite": {
+            "$ref": "#/$defs/addresses",
+            "allOf": [{ "contains": { "const": "0x50" } }, { "contains": { "const": "0x51" } }, { "contains": { "const": "0xD1" } }]
+          },
+          "writeAllowlist": { "const": [] },
+          "fanCurves": { "const": {} }
+        }
+      },
+      "writePolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["enabled", "unlistedAddress", "identityMatch", "snapshotBeforeWrite", "readBackAfterWrite", "unsettledCall", "rollback", "notes"],
+        "properties": {
+          "enabled": { "const": false },
+          "unlistedAddress": { "const": "deny" },
+          "identityMatch": { "const": "exact" },
+          "snapshotBeforeWrite": { "const": true },
+          "readBackAfterWrite": { "const": true },
+          "unsettledCall": { "const": "quarantine" },
+          "rollback": { "const": "knownCompletedWritesToVerifiedSafeSnapshotOnly" },
+          "notes": { "type": "string", "minLength": 1 }
+        }
+      },
+      "capabilityEvidence": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["feature", "evidence", "observation"],
+          "properties": {
+            "feature": { "type": "string", "minLength": 1 },
+            "evidence": { "$ref": "#/$defs/evidence" },
+            "observation": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "registers": {
+        "type": "object",
+        "required": ["shiftMode", "fanMode", "superBattery", "coolerBoost", "chargeLimit", "webcam", "fnWinSwap", "keyboardBrightness", "microphoneMuteLed", "speakerMuteLed", "touchpad", "winKey", "usbCharging", "gpuMuxEcIndicator"],
+        "propertyNames": { "enum": ["shiftMode", "fanMode", "superBattery", "coolerBoost", "chargeLimit", "webcam", "fnWinSwap", "keyboardBrightness", "microphoneMuteLed", "speakerMuteLed", "touchpad", "winKey", "usbCharging", "gpuMuxEcIndicator"] },
+        "additionalProperties": { "$ref": "#/$defs/register" }
+      },
+      "telemetry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["temperature", "reportedDuty", "rpm"],
+        "properties": {
+          "temperature": { "$ref": "#/$defs/metric" },
+          "reportedDuty": { "$ref": "#/$defs/metric" },
+          "rpm": { "$ref": "#/$defs/metric" }
+        }
+      },
+      "fanCurves": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verified", "pointCount", "maxDutyPercent", "fixedAnchorIndex", "temperatureKnotsWritable", "minimumDutyPolicy", "cpu", "gpu"],
+        "properties": {
+          "verified": { "const": false },
+          "pointCount": { "const": 6 },
+          "maxDutyPercent": { "const": 150 },
+          "fixedAnchorIndex": { "const": 0 },
+          "temperatureKnotsWritable": { "const": false },
+          "minimumDutyPolicy": { "const": "fixedFactoryTemperaturePerPointFactoryDutyFloor" },
+          "cpu": { "$ref": "#/$defs/curve" },
+          "gpu": { "$ref": "#/$defs/curve" }
+        }
+      }
+    },
+    "$defs": {
+      "byte": { "type": "integer", "minimum": 0, "maximum": 255 },
+      "address": { "type": "string", "pattern": "^0x[0-9A-F]{2}$" },
+      "addresses": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+      "sourceId": { "enum": ["aml", "oemLog", "scenario", "generalSettings", "g2_10", "brief"] },
+      "evidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceId" } },
+      "register": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["address", "encoding", "verified", "evidence", "notes"],
+        "properties": {
+          "address": { "oneOf": [{ "$ref": "#/$defs/address" }, { "type": "null" }] },
+          "secondaryAddress": { "$ref": "#/$defs/address" },
+          "encoding": { "enum": ["enum", "masked", "bit", "basePlusPercent", "candidateLevel", "rawIndicator", "unknown"] },
+          "verified": { "const": false },
+          "evidence": { "$ref": "#/$defs/evidence" },
+          "notes": { "type": "string", "minLength": 1 },
+          "modes": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/byte" } },
+          "mask": { "type": "integer", "minimum": 1, "maximum": 255 },
+          "bit": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "inverted": { "type": "boolean" },
+          "base": { "$ref": "#/$defs/byte" },
+          "candidatePercentSteps": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          "candidateLevels": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/byte" } },
+          "observedRaw": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/byte" } }
+        },
+        "allOf": [
+          { "if": { "properties": { "encoding": { "const": "enum" } } }, "then": { "required": ["modes"] } },
+          { "if": { "properties": { "encoding": { "const": "bit" } } }, "then": { "required": ["bit", "mask", "inverted"] } },
+          { "if": { "properties": { "encoding": { "const": "masked" } } }, "then": { "required": ["mask", "modes"] } },
+          { "if": { "properties": { "encoding": { "const": "basePlusPercent" } } }, "then": { "required": ["base", "candidatePercentSteps"] } },
+          { "if": { "properties": { "encoding": { "const": "unknown" } } }, "then": { "properties": { "address": { "type": "null" } } }, "else": { "properties": { "address": { "$ref": "#/$defs/address" } } } }
+        ]
+      },
+      "metric": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "encoding", "unit", "statusByte", "okValue", "channels", "notes"],
+        "properties": {
+          "method": { "enum": ["Get_Temperature", "Get_Fan"] },
+          "encoding": { "enum": ["u8", "u16bePeriod"] },
+          "unit": { "enum": ["celsius", "percent", "rpm"] },
+          "statusByte": { "const": 0 },
+          "okValue": { "const": 1 },
+          "rpmNumerator": { "const": 480000 },
+          "channels": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cpu", "gpu"],
+            "properties": { "cpu": { "$ref": "#/$defs/channel" }, "gpu": { "$ref": "#/$defs/channel" } }
+          },
+          "notes": { "type": "string", "minLength": 1 }
+        },
+        "if": { "properties": { "encoding": { "const": "u16bePeriod" } } },
+        "then": { "required": ["rpmNumerator"] }
+      },
+      "channel": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["addresses", "selector", "responseIndex"],
+        "properties": {
+          "addresses": { "$ref": "#/$defs/addresses", "minItems": 1, "maxItems": 2 },
+          "selector": { "$ref": "#/$defs/byte" },
+          "responseIndex": { "type": "integer", "minimum": 1, "maximum": 30 }
+        }
+      },
+      "curve": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verified", "temperatureAddresses", "dutyAddresses", "factoryTemperatureC", "factoryDutyPercent", "preserveAddresses"],
+        "properties": {
+          "verified": { "const": false },
+          "temperatureAddresses": { "$ref": "#/$defs/addresses", "minItems": 6, "maxItems": 6 },
+          "dutyAddresses": { "$ref": "#/$defs/addresses", "minItems": 6, "maxItems": 6 },
+          "factoryTemperatureC": { "type": "array", "minItems": 6, "maxItems": 6, "uniqueItems": true, "items": { "type": "integer", "minimum": 0, "maximum": 125 } },
+          "factoryDutyPercent": { "type": "array", "minItems": 6, "maxItems": 6, "items": { "type": "integer", "minimum": 0, "maximum": 150 } },
+          "preserveAddresses": { "$ref": "#/$defs/addresses", "minItems": 1 }
+        }
+      }
+    }
+  },
+  "schemaVersion": 1,
+  "verified": false,
+  "identity": {
+    "model": "Vector 17 HX AI A2XWJG",
+    "boardId": "MS-17S3",
+    "boardRevision": "REV:1.0",
+    "biosVersion": "E17S3IMS.112",
+    "ecFirmware": "17S3EMS1.107",
+    "ecResearchPrefix": "17S3EMS1.1",
+    "wmiVersion": "2.8",
+    "dsdtSha256": "d85ba1cf4eef70adcc2e98b7bf413670e90f39f815140c9c5f06c58f839d5a64"
+  },
+  "sources": {
+    "aml": "Local E17S3IMS.112 DSDT: MSI_ACPI GUID maps to WMAM; method branches and EC byte offsets read from AML without evaluating it.",
+    "oemLog": "MSI/NoteBook/MSI NBFoundation Service/WmiAcpi2.log: historical OEM method outputs; byte values are logged in hexadecimal.",
+    "scenario": "HKLM 32-bit view, MSI/MSI Center/Component/Base Module/Scenario: Default_Temp, Default_Fan, KeyBoard and GPU clock limits read locally.",
+    "generalSettings": "HKLM 32-bit view, MSI/MSI Center/Component/Base Module/GeneralSetting: OEM capability and cached UI flags, not live EC values.",
+    "g2_10": "BeardOverflow/msi-ec CONF_G2_10 includes 17S3EMS1.1 for a related SKU; used for register facts, not as local write verification.",
+    "brief": "Requested candidate settings and product limits; verify the hardware encoding before promotion."
+  },
+  "guardMap": {
+    "schemaVersion": 1,
+    "boardId": "MS-17S3",
+    "firmwarePrefixes": ["17S3EMS1.107"],
+    "denyWrite": [
+      "0x2F", "0x33", "0x34", "0x50", "0x51", "0x68", "0x69", "0x6A", "0x6B", "0x6C", "0x6D", "0x6E", "0x6F", "0x70", "0x71", "0x72",
+      "0x78", "0x79", "0x7A", "0x7B", "0x7C", "0x7D", "0x7E", "0x7F", "0x80", "0x81", "0x82", "0x83", "0x84", "0x85", "0x86", "0x87", "0x88", "0x89", "0x8A",
+      "0x90", "0x91", "0x92", "0x93", "0x94", "0x95", "0x96", "0x97", "0x99", "0x9A", "0x9B", "0x9C", "0x9D", "0x9E", "0x9F",
+      "0xC8", "0xC9", "0xCA", "0xCB", "0xCC", "0xCD", "0xCE", "0xCF", "0xD1", "0xD8"
+    ],
+    "writeAllowlist": [],
+    "fanCurves": {}
+  },
+  "writePolicy": {
+    "enabled": false,
+    "unlistedAddress": "deny",
+    "identityMatch": "exact",
+    "snapshotBeforeWrite": true,
+    "readBackAfterWrite": true,
+    "unsettledCall": "quarantine",
+    "rollback": "knownCompletedWritesToVerifiedSafeSnapshotOnly",
+    "notes": "Core must always union its built-in PL1/PL2 deny at 0x50/0x51 with guardMap.denyWrite. The research prefix is never a write match. Unknown/reserved addresses and all candidate writes remain denied."
+  },
+  "capabilityEvidence": [
+    { "feature": "GpuMux", "evidence": ["aml", "oemLog", "generalSettings"], "observation": "Get_Device(1).Bytes[2] is EC 0x2F and has mask 0x40 in the OEM log (raw 0x5B). OEM flags GPUswitchSP, GPUswitchUMA, and GPUswitchDiscrete are 1. The OEM UEFI request field is separate from EC 0xD1; physical mode correlation and a validated writable payload are pending." },
+    { "feature": "FanCurve", "evidence": ["aml", "oemLog", "scenario", "brief"], "observation": "OEM has separate CPU and GPU six-point defaults. Raw Get_Fan includes a live duty byte and a seventh duty slot. The product ceiling is 150 percent; it is not a speed or protection guarantee." },
+    { "feature": "GpuClockOffset", "evidence": ["scenario"], "observation": "IsSupOC=1 and both GPU_Core_Minimum/Maximum and GPU_VRAM_Minimum/Maximum are 0/200 MHz. Driver permission, clock domains, and actual limits require their own probe." },
+    { "feature": "GeneralSettings", "evidence": ["generalSettings", "oemLog"], "observation": "TouchPad=1, TouchPadEnable=1, WinKey=1, USBsup=1, USBstatus=0 are vendor settings. They do not establish EC bit positions or polarity." }
+  ],
+  "registers": {
+    "shiftMode": { "address": "0xD2", "encoding": "enum", "modes": { "balanced": 193, "eco": 194, "extremePerformance": 196 }, "observedRaw": [193, 196], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "G2 calls 0xC1 Comfort and 0xC4 Turbo; these are candidate domain labels. Complete scenario changes can involve multiple registers." },
+    "fanMode": { "address": "0xD4", "encoding": "enum", "modes": { "auto": 13, "silent": 29, "advanced": 141 }, "observedRaw": [13, 141], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "The OEM log shows Get_AP(1) 0x0D/0x8D. 0x1D is the G2 candidate for Silent; a fan mode is not a complete performance scenario." },
+    "superBattery": { "address": "0xEB", "encoding": "masked", "mask": 15, "modes": { "off": 0, "on": 15 }, "verified": false, "evidence": ["g2_10"], "notes": "Family selector in the low nibble; mixed values and pairing with other scene fields need local validation. Preserve the high nibble." },
+    "coolerBoost": { "address": "0x98", "encoding": "bit", "bit": 7, "mask": 128, "inverted": false, "observedRaw": [2], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "Get_Thermal(3).Bytes[1]; 0x02 is an observed byte, so compare only bit 7 for this logical value." },
+    "chargeLimit": { "address": "0xD7", "encoding": "basePlusPercent", "base": 128, "candidatePercentSteps": [60, 80, 100], "observedRaw": [128], "verified": false, "evidence": ["g2_10", "aml", "oemLog", "brief"], "notes": "Candidate 0x80 + percent. Get_AP(0).Bytes[5] logged 0x80; treat that and every unmapped value as Unknown until Phase 0 correlates the OEM policy. 100 is full charge, not a 0x80 sentinel." },
+    "webcam": { "address": "0x2E", "secondaryAddress": "0x2F", "encoding": "bit", "bit": 1, "mask": 2, "inverted": false, "observedRaw": [27], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "0x2E bit 1 is the OEM enabled-state read. 0x2F is a separate capability/block byte; leave it untouched and do not infer its block polarity from the enable bit." },
+    "fnWinSwap": { "address": "0xE8", "encoding": "bit", "bit": 4, "mask": 16, "inverted": true, "observedRaw": [0], "verified": false, "evidence": ["g2_10", "oemLog"], "notes": "Family convention: the logical swap state is true when bit 4 is clear. Verify against this SKU's displayed/key behavior." },
+    "keyboardBrightness": { "address": "0xD3", "encoding": "candidateLevel", "base": 128, "candidateLevels": [0, 1, 2, 3], "observedRaw": [128], "verified": false, "evidence": ["aml", "oemLog", "scenario", "brief"], "notes": "Get_AP(0).Bytes[4] and the Scenario KeyBoard value tie 0xD3 to the OEM brightness read. CONF_G2_10 leaves keyboard EC addresses unsupported; base plus level is a candidate, distinct from RGB." },
+    "microphoneMuteLed": { "address": "0x2C", "encoding": "bit", "bit": 1, "mask": 2, "inverted": false, "observedRaw": [0], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "LED state only; use the OS audio endpoint for actual microphone mute." },
+    "speakerMuteLed": { "address": "0x2D", "encoding": "bit", "bit": 1, "mask": 2, "inverted": false, "observedRaw": [36, 38], "verified": false, "evidence": ["g2_10", "aml", "oemLog"], "notes": "0x24 and 0x26 differ by bit 1. Final correlation is pending; do not overwrite the other LEDs or audio control bits." },
+    "touchpad": { "address": null, "encoding": "unknown", "verified": false, "evidence": ["generalSettings"], "notes": "OEM setting observed; EC address and polarity not established." },
+    "winKey": { "address": null, "encoding": "unknown", "verified": false, "evidence": ["generalSettings"], "notes": "OEM WinKey flag is not proof of a firmware register." },
+    "usbCharging": { "address": null, "encoding": "unknown", "verified": false, "evidence": ["generalSettings"], "notes": "OEM USB support/status flags observed; the read path and bit are not established." },
+    "gpuMuxEcIndicator": { "address": "0xD1", "encoding": "rawIndicator", "observedRaw": [0], "verified": false, "evidence": ["aml", "oemLog", "generalSettings"], "notes": "Read-only Get_AP(0).Bytes[2] and event detail source. Mode meaning is unverified; never use 0xD1 as an alternate MUX write path." }
+  },
+  "telemetry": {
+    "temperature": {
+      "method": "Get_Temperature", "encoding": "u8", "unit": "celsius", "statusByte": 0, "okValue": 1,
+      "channels": { "cpu": { "addresses": ["0x68"], "selector": 0, "responseIndex": 1 }, "gpu": { "addresses": ["0x80"], "selector": 0, "responseIndex": 2 } },
+      "notes": "Values are unsigned. Treat out-of-domain values, unverified sentinels, or an unavailable GPU sensor as missing instead of substituting zero."
+    },
+    "reportedDuty": {
+      "method": "Get_Fan", "encoding": "u8", "unit": "percent", "statusByte": 0, "okValue": 1,
+      "channels": { "cpu": { "addresses": ["0x71"], "selector": 1, "responseIndex": 1 }, "gpu": { "addresses": ["0x89"], "selector": 2, "responseIndex": 1 } },
+      "notes": "EC reported duty, not RPM. Accept 0-150 from a supported sensor; zero is a possible reading."
+    },
+    "rpm": {
+      "method": "Get_Fan", "encoding": "u16bePeriod", "unit": "rpm", "statusByte": 0, "okValue": 1, "rpmNumerator": 480000,
+      "channels": { "cpu": { "addresses": ["0xC8", "0xC9"], "selector": 0, "responseIndex": 1 }, "gpu": { "addresses": ["0xCA", "0xCB"], "selector": 0, "responseIndex": 3 } },
+      "notes": "CPU/GPU order follows OEM usage. For each confirmed channel, period 0 is 0 RPM, otherwise use integer division 480000 / period. Unvalidated extra channels are absent."
+    }
+  },
+  "fanCurves": {
+    "verified": false,
+    "pointCount": 6,
+    "maxDutyPercent": 150,
+    "fixedAnchorIndex": 0,
+    "temperatureKnotsWritable": false,
+    "minimumDutyPolicy": "fixedFactoryTemperaturePerPointFactoryDutyFloor",
+    "cpu": {
+      "verified": false,
+      "temperatureAddresses": ["0x69", "0x6A", "0x6B", "0x6C", "0x6D", "0x6E"],
+      "dutyAddresses": ["0x72", "0x73", "0x74", "0x75", "0x76", "0x77"],
+      "factoryTemperatureC": [0, 48, 56, 62, 70, 78],
+      "factoryDutyPercent": [0, 36, 42, 52, 76, 84],
+      "preserveAddresses": ["0x6F", "0x70", "0x71", "0x78", "0x79", "0x7A", "0x7B", "0x7C", "0x7D", "0x7E", "0x7F"]
+    },
+    "gpu": {
+      "verified": false,
+      "temperatureAddresses": ["0x81", "0x82", "0x83", "0x84", "0x85", "0x86"],
+      "dutyAddresses": ["0x8A", "0x8B", "0x8C", "0x8D", "0x8E", "0x8F"],
+      "factoryTemperatureC": [0, 43, 48, 56, 65, 72],
+      "factoryDutyPercent": [0, 36, 46, 56, 80, 88],
+      "preserveAddresses": ["0x87", "0x88", "0x89", "0x90", "0x91", "0x92", "0x93", "0x94", "0x95", "0x96", "0x97"]
+    }
+  }
+}

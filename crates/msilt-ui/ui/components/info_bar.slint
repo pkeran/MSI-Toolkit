@@ -1,0 +1,59 @@
+// Magpie / WinUI inline InfoBar.
+// level: 0 = neutral footnote · 1 = warn · 2 = danger · 3 = ok · 4 = Magpie blue info
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component InfoBar inherits Rectangle {
+    in property <int> level: 0;
+    in property <string> title: "";
+    in property <string> text: "";
+
+    min-height: 38px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    background: Theme.severity-surface(level);
+    border-color: level == 0 ? Theme.card-stroke
+                : Theme.severity-color(level).with-alpha(0.18);
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 9px;
+        padding-bottom: 9px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.level == 2 || root.level == 1 ? "warning"
+                     : root.level == 3 ? "check"
+                     : "info";
+                size: 16px;
+                tint: root.level == 0 ? Theme.text-3 : Theme.severity-icon-color(root.level);
+            }
+        }
+
+        if root.title != "" : VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title;
+                font-size: Theme.font-caption;
+                font-weight: 600;
+                color: Theme.text;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.text;
+                font-size: Theme.font-caption;
+                color: Theme.text-2;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

@@ -1,0 +1,307 @@
+# MSI-Toolkit automation rules, schema 1.
+#
+# This file is parsed by `msilt-automation` (crate root: `AutomationRuleSet`).
+# It is treated as untrusted user data: unknown keys, out-of-range values and
+# over-deep conditions are load errors, never silently ignored settings.
+#
+# Ownership: `%LOCALAPPDATA%\MSI-Toolkit\automation.toml` for the interactive
+# user (the daemon resolves that path, not this crate).
+#
+# Semantics in one paragraph: a rule *leases* a hardware target while its
+# condition holds. Releasing a lease is the entire recovery story - the daemon
+# falls back to the next lease or to the baseline it read back when the field
+# was first overridden. Nothing is ever "undone" by a reverse action.
+
+schema = 1
+
+[limits]
+# Hard safety floors. A config may tighten these but never relax them.
+max_rules = 512
+max_condition_depth = 8
+min_timer_period_ms = 60000
+ec_writes_per_10s = 4
+ec_min_gap_ms = 250
+battery_hysteresis_percent = 3
+# Local offset used by `daily` and `time_window` (Core v1 carries UTC only).
+utc_offset_minutes = 480
+max_actions_per_event = 32
+lease_depth = 8
+flap_window_ms = 60000
+flap_threshold = 5
+flap_freeze_ms = 120000
+
+# ---------------------------------------------------------------- gaming ----
+
+[[rules]]
+id = "game-extreme"
+name = "进入游戏自动极速"
+priority = 600
+enabled = true
+debounce_on_ms = 800
+debounce_off_ms = 1500
+cooldown_ms = 3000
+notify = ["performanceMode", "displayRefreshRate"]
+
+[rules.trigger]
+on = "foreground"
+apps = ["game:steam:*", "game:epic:*"]
+# foreground_lost | process_exit | both
+exit = "foreground_lost"
+
+[rules.condition]
+all = [
+  { ac_connected = true },
+  { not = { session_unlocked = false } },
+]
+
+[[rules.actions]]
+field = "performanceMode"
+value = "extremePerformance"
+
+[[rules.actions]]
+field = "displayRefreshRate"
+value = 240
+
+[[rules.actions]]
+field = "coolerBoost"
+value = false
+
+# ------------------------------------------------------------- power state ----
+
+[[rules]]
+id = "on-battery-silent"
+name = "用电池时静音"
+priority = 400
+debounce_on_ms = 1200
+debounce_off_ms = 2000
+cooldown_ms = 5000
+
+[rules.trigger]
+on = "power"
+
+[rules.condition]
+ac_connected = false
+
+[[rules.actions]]
+field = "performanceMode"
+value = "silent"
+
+[[rules.actions]]
+field = "displayRefreshRate"
+value = 60
+
+[[rules]]
+id = "battery-saver"
+name = "低电量超级省电"
+priority = 650
+debounce_on_ms = 2000
+debounce_off_ms = 3000
+cooldown_ms = 10000
+# Release only after the battery climbs back above 20 + 3 %.
+hysteresis_percent = 3
+notify = ["performanceMode"]
+
+[rules.trigger]
+on = "battery"
+
+[rules.condition]
+battery_percent = { op = "lt", value = 20 }
+
+[[rules.actions]]
+field = "performanceMode"
+value = "superBattery"
+
+[[rules.actions]]
+field = "displayBrightness"
+value = 30
+
+[[rules]]
+id = "battery-care"
+name = "长期插电保养"
+priority = 300
+debounce_on_ms = 5000
+debounce_off_ms = 5000
+cooldown_ms = 60000
+
+[rules.trigger]
+on = "power"
+
+[rules.condition]
+all = [
+  { ac_connected = true },
+  { battery_percent = { op = "ge", value = 80 } },
+]
+
+[[rules.actions]]
+field = "chargeLimit"
+value = 80
+
+# ------------------------------------------------------------------ video ----
+
+[[rules]]
+id = "docked-display"
+name = "外接显示器时高刷"
+priority = 500
+debounce_on_ms = 400
+debounce_off_ms = 400
+cooldown_ms = 2000
+
+[rules.trigger]
+on = "display"
+
+[rules.condition]
+external_displays = { op = "ge", count = 1 }
+
+[[rules.actions]]
+field = "displayRefreshRate"
+value = 240
+
+[[rules.actions]]
+field = "colorProfile"
+value = "factory-srgb"
+
+# ----------------------------------------------------------------- session ----
+
+[[rules]]
+id = "locked-dim"
+name = "锁屏时降低亮度"
+priority = 200
+debounce_on_ms = 0
+debounce_off_ms = 0
+cooldown_ms = 0
+
+[rules.trigger]
+on = "session"
+
+[rules.condition]
+session_unlocked = false
+
+[[rules.actions]]
+field = "displayBrightness"
+value = 10
+
+# -------------------------------------------------------------------- idle ----
+
+[[rules]]
+id = "idle-silent"
+name = "空闲十分钟后静音"
+priority = 350
+debounce_on_ms = 0
+debounce_off_ms = 0
+cooldown_ms = 1000
+
+[rules.trigger]
+on = "idle"
+threshold_ms = 600000
+
+[rules.condition]
+idle_at_least_ms = 600000
+
+[[rules.actions]]
+field = "performanceMode"
+value = "silent"
+
+# ---------------------------------------------------------------- schedule ----
+
+[[rules]]
+id = "night-quiet"
+name = "夜间安静"
+priority = 300
+debounce_on_ms = 0
+debounce_off_ms = 0
+cooldown_ms = 5000
+
+[rules.trigger]
+on = "daily"
+at = "22:30"
+days = ["mon", "tue", "wed", "thu", "fri"]
+
+[rules.condition]
+time_window = { from = "22:30", to = "07:00", days = ["mon", "tue", "wed", "thu", "fri"] }
+
+[[rules.actions]]
+field = "performanceMode"
+value = "silent"
+
+[[rules.actions]]
+field = "displayBrightness"
+value = 40
+
+[[rules]]
+id = "hourly-refresh"
+name = "每小时重新收敛一次"
+priority = 100
+debounce_on_ms = 0
+debounce_off_ms = 0
+cooldown_ms = 0
+
+[rules.trigger]
+on = "interval"
+every_ms = 3600000
+
+[rules.condition]
+always = true
+
+[[rules.actions]]
+field = "coolerBoost"
+value = false
+
+# ------------------------------------------------------------------ hotkey ----
+
+[[rules]]
+id = "hotkey-boost"
+name = "热键切换强冷"
+priority = 700
+cooldown_ms = 1000
+
+[rules.trigger]
+on = "hotkey"
+id = "toggle-cooler-boost"
+
+[rules.condition]
+always = true
+
+[[rules.actions]]
+field = "coolerBoost"
+value = true
+
+# --------------------------------------------------------------- fan curve ----
+
+[[rules]]
+id = "fan-quiet-curve"
+name = "安静风扇曲线"
+priority = 450
+enabled = false
+debounce_on_ms = 1000
+debounce_off_ms = 2000
+cooldown_ms = 30000
+
+[rules.trigger]
+on = "power"
+
+[rules.condition]
+ac_connected = false
+
+[[rules.actions]]
+field = "fanCurve"
+channel = "cpu"
+points = [
+  { temperatureC = 0, dutyPercent = 0 },
+  { temperatureC = 40, dutyPercent = 20 },
+  { temperatureC = 55, dutyPercent = 35 },
+  { temperatureC = 70, dutyPercent = 55 },
+  { temperatureC = 85, dutyPercent = 80 },
+  { temperatureC = 95, dutyPercent = 100 },
+]
+
+[[rules.actions]]
+field = "fanCurve"
+channel = "gpu"
+points = [
+  { temperatureC = 0, dutyPercent = 0 },
+  { temperatureC = 40, dutyPercent = 20 },
+  { temperatureC = 55, dutyPercent = 35 },
+  { temperatureC = 70, dutyPercent = 55 },
+  { temperatureC = 85, dutyPercent = 80 },
+  { temperatureC = 95, dutyPercent = 100 },
+]

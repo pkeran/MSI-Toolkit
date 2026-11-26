@@ -1,0 +1,57 @@
+// `StatusPill` — sleek Win11 topbar status capsule with calm hairline surface.
+// level: 0 neutral · 1 warn · 2 danger · 3 ok · 4 accent
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component StatusPill inherits Rectangle {
+    in property <string> glyph: "";
+    in property <string> label: "";
+    in property <string> value: "";
+    in property <int> level: 0;
+
+    height: Theme.pill-h;
+    border-radius: Theme.radius;
+    background: root.level == 2 ? Theme.danger-surface : Theme.subtle-hover;
+    border-width: root.level == 2 ? 1px : 0px;
+    border-color: root.level == 2 ? Theme.danger.with-alpha(0.32) : transparent;
+    width: pill-layout.preferred-width;
+
+    pill-layout := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 10px;
+        spacing: 6px;
+
+        if root.level != 0 : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.severity-color(root.level);
+            }
+        }
+        if root.level == 0 && root.glyph != "" : VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: root.glyph;
+                size: 13px;
+                tint: Theme.text-3;
+            }
+        }
+        if root.label != "" : Text {
+            text: root.label;
+            font-size: Theme.font-micro;
+            color: Theme.text-3;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            font-size: Theme.font-caption;
+            font-weight: 500;
+            font-family: Theme.font-mono;
+            color: Theme.text-2;
+            vertical-alignment: center;
+        }
+    }
+}

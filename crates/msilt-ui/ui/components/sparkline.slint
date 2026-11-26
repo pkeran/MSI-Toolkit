@@ -1,0 +1,76 @@
+// Telemetry trend canvas with Y-axis reference labels.
+// Missing readings break the line (Rust emits a new `M`) — never interpolated.
+
+import { Theme } from "../theme.slint";
+
+export component Sparkline inherits Rectangle {
+    in property <string> cpu-path: "";
+    in property <string> gpu-path: "";
+    in property <bool> show-gpu: true;
+    in property <int> max-value: 100;
+
+    background: Theme.inset;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    clip: true;
+
+    property <length> pad-l: 32px;
+    property <length> pad-r: 8px;
+    property <length> pad-v: 10px;
+    property <length> plot-w: max(20px, root.width - root.pad-l - root.pad-r);
+    property <length> plot-h: max(20px, root.height - 2 * root.pad-v);
+
+    // horizontal grid at 0 / 25 / 50 / 75 / 100 °C
+    for k in 5 : Rectangle {
+        x: root.pad-l;
+        y: root.pad-v + root.plot-h * k / 4.0;
+        width: root.plot-w;
+        height: 1px;
+        background: Theme.grid;
+    }
+
+    for k in 3 : Text {
+        x: 0px;
+        y: root.pad-v + root.plot-h * k / 2.0 - 6px;
+        width: root.pad-l - 6px;
+        text: "" + (100 - k * 50) + "°";
+        font-size: 9px;
+        font-family: Theme.font-mono;
+        color: Theme.text-3;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+
+    if root.cpu-path != "" : Path {
+        x: root.pad-l;
+        y: root.pad-v;
+        width: root.plot-w;
+        height: root.plot-h;
+        viewbox-width: 1000;
+        viewbox-height: 1000;
+        fit: fill;
+        commands: root.cpu-path;
+        stroke: Theme.accent;
+        stroke-width: 1.75px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: transparent;
+    }
+
+    if root.show-gpu && root.gpu-path != "" : Path {
+        x: root.pad-l;
+        y: root.pad-v;
+        width: root.plot-w;
+        height: root.plot-h;
+        viewbox-width: 1000;
+        viewbox-height: 1000;
+        fit: fill;
+        commands: root.gpu-path;
+        stroke: Theme.warn;
+        stroke-width: 1.75px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: transparent;
+    }
+}

@@ -1,0 +1,504 @@
+// `FanCurveEditor` — the 6-knot CPU/GPU fan curve canvas with 2x3 numeric stepper grid.
+//
+// Contract (docs/UI_DESIGN_SPEC.md §6.1 & docs/HARDWARE_PROTOCOLS.md §2):
+//   * Temperatures are FIXED knots; only duty (Y) may move.
+//   * Knot 0 is the verified anchor and is locked when `anchor` is true.
+//   * Duty must stay >= factory floor, non-decreasing, and <= `max-duty`.
+//   * Numeric steppers use a 2x3 grid so SpinBox never clips even at 960px min width.
+
+import { Theme } from "../theme.slint";
+import { CurvePoint, Fmt } from "../state.slint";
+import { SpinBox } from "std-widgets.slint";
+import { FluentButton } from "fluent_button.slint";
+import { Chip } from "primitives.slint";
+
+export component DutyStepper inherits Rectangle {
+    in property <int> duty: -1;
+    in property <int> floor: 0;
+    in property <int> ceiling: 100;
+    in property <bool> locked: false;
+    in property <bool> enabled: true;
+    callback stepped(value: int);
+
+    height: 30px;
+    horizontal-stretch: 1;
+    background: transparent;
+
+    if locked : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius;
+        background: Theme.card-disabled;
+        border-width: 1px;
+        border-color: Theme.card-stroke;
+        Text {
+            text: Fmt.pct(root.duty) + " 锁定";
+            font-size: Theme.font-micro;
+            font-family: Theme.font-mono;
+            color: Theme.text-3;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    if !locked : SpinBox {
+        width: parent.width;
+        height: parent.height;
+        value: root.duty;
+        minimum: root.floor;
+        maximum: root.ceiling;
+        enabled: root.enabled;
+        step-size: 1;
+        edited(v) => { root.stepped(v); }
+    }
+}
+
+export component FanCurveEditor inherits Rectangle {
+    in property <string> title: "CPU 风扇";
+    in property <int> channel: 0;
+    in property <[CurvePoint]> points: [];
+    in property <int> max-duty: 100;
+    in property <int> live-temp: -1;
+    in property <int> live-rpm: -1;
+    in property <int> live-duty: -1;
+    in property <bool> readonly: false;
+    in property <bool> can-apply: true;
+    in property <bool> pending: false;
+    in property <bool> dirty: false;
+    in property <string> error: "";
+
+    callback edit(index: int, duty: int);
+    callback apply();
+    callback reset();
+
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: root.dirty ? Theme.accent.with-alpha(0.5) : Theme.card-stroke;
+    horizontal-stretch: 1;
+    clip: true;
+
+    // ── plot geometry ───────────────────────────────────────────────────────
+    property <length> pad-l: 32px;
+    property <length> pad-r: 14px;
+    property <length> pad-t: 12px;
+    property <length> pad-b: 22px;
+    property <length> plot-w: max(40px, canvas.width - root.pad-l - root.pad-r);
+    property <length> plot-h: max(30px, canvas.height - root.pad-t - root.pad-b);
+    property <bool> ready: root.points.length == 6;
+
+    pure function px(i: int) -> length {
+        if i < 0 || i >= root.points.length { return 0px; }
+        return root.pad-l + (root.points[i].temp / 100.0) * root.plot-w;
+    }
+
+    pure function temp-at(i: int) -> int {
+        if i < 0 || i >= root.points.length { return 0; }
+        return root.points[i].temp;
+    }
+
+    pure function duty-at(i: int) -> int {
+        if i < 0 || i >= root.points.length { return 0; }
+        return root.points[i].duty;
+    }
+
+    pure function floor-at(i: int) -> int {
+        if i < 0 || i >= root.points.length { return 0; }
+        return root.points[i].floor;
+    }
+
+    pure function locked-at(i: int) -> bool {
+        if i < 0 || i >= root.points.length { return true; }
+        return root.points[i].anchor;
+    }
+
+    pure function py(duty: int) -> length {
+        return root.pad-t + (1.0 - duty / (root.max-duty * 1.0)) * root.plot-h;
+    }
+
+    pure function base-y() -> length {
+        return root.pad-t + root.plot-h;
+    }
+
+    pure function duty-from-y(y: length) -> int {
+        return Math.round((1.0 - (y - root.pad-t) / root.plot-h) * root.max-duty);
+    }
+
+    pure function nearest(x: length) -> int {
+        let m01 = (root.px(0) + root.px(1)) / 2.0;
+        let m12 = (root.px(1) + root.px(2)) / 2.0;
+        let m23 = (root.px(2) + root.px(3)) / 2.0;
+        let m34 = (root.px(3) + root.px(4)) / 2.0;
+        let m45 = (root.px(4) + root.px(5)) / 2.0;
+        if x < m01 { return 0; }
+        if x < m12 { return 1; }
+        if x < m23 { return 2; }
+        if x < m34 { return 3; }
+        if x < m45 { return 4; }
+        return 5;
+    }
+
+    pure function n(v: length) -> float {
+        return v / 1px;
+    }
+
+    pure function line-cmd(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int) -> string {
+        return "M" + root.n(root.px(0)) + " " + root.n(root.py(a0))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.py(a1))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.py(a2))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.py(a3))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.py(a4))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.py(a5));
+    }
+
+    pure function floor-zone-cmd(f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
+        let b = root.n(root.base-y());
+        return "M" + root.n(root.px(0)) + " " + root.n(root.py(f0))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.py(f1))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.py(f2))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.py(f3))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.py(f4))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.py(f5))
+             + " L" + root.n(root.px(5)) + " " + b
+             + " L" + root.n(root.px(0)) + " " + b + " Z";
+    }
+
+    pure function span-cmd(c0: int, c1: int, c2: int, c3: int, c4: int, c5: int,
+                           f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
+        return "M" + root.n(root.px(0)) + " " + root.n(root.py(c0))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.py(c1))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.py(c2))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.py(c3))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.py(c4))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.py(c5))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.py(f5))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.py(f4))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.py(f3))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.py(f2))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.py(f1))
+             + " L" + root.n(root.px(0)) + " " + root.n(root.py(f0)) + " Z";
+    }
+
+    pure function duty-at-temp() -> int {
+        if root.live-temp < 0 || !root.ready { return -1; }
+        let t = root.live-temp * 1.0;
+        if t <= root.points[0].temp { return root.points[0].duty; }
+        if t >= root.points[5].temp { return root.points[5].duty; }
+        if t < root.points[1].temp { return root.interp(0, 1); }
+        if t < root.points[2].temp { return root.interp(1, 2); }
+        if t < root.points[3].temp { return root.interp(2, 3); }
+        if t < root.points[4].temp { return root.interp(3, 4); }
+        return root.interp(4, 5);
+    }
+
+    pure function interp(a: int, b: int) -> int {
+        let ta = root.points[a].temp * 1.0;
+        let tb = root.points[b].temp * 1.0;
+        let da = root.points[a].duty * 1.0;
+        let db = root.points[b].duty * 1.0;
+        if tb <= ta { return root.points[b].duty; }
+        return Math.round(da + (db - da) * (root.live-temp - ta) / (tb - ta));
+    }
+
+    pure function live-x() -> length {
+        if root.live-temp < 0 { return 0px; }
+        return root.pad-l + (root.live-temp / 100.0) * root.plot-w;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        // ── header ──────────────────────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 6px;
+            height: Theme.control-h;
+
+            Text {
+                text: root.title;
+                font-size: Theme.font-group;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: root.readonly ? "只读" : (root.can-apply ? "可编辑" : "仅预览");
+                    level: root.readonly ? 1 : (root.can-apply ? 3 : 1);
+                    glyph: root.readonly || !root.can-apply ? "lock" : "";
+                }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+
+            Text {
+                text: root.live-temp < 0
+                    ? "无读数"
+                    : ("" + root.live-temp + "°C · " + Fmt.rpm(root.live-rpm));
+                font-size: Theme.font-caption;
+                font-family: Theme.font-mono;
+                color: Theme.text-2;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                FluentButton {
+                    text: "恢复";
+                    compact: true;
+                    variant: 0;
+                    width: 64px;
+                    enabled: !root.readonly && !root.pending && root.dirty;
+                    clicked => { root.reset(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                FluentButton {
+                    text: root.pending ? "应用中" : "应用";
+                    compact: true;
+                    variant: 1;
+                    width: 64px;
+                    enabled: !root.readonly && root.can-apply && !root.pending && root.dirty && root.error == "";
+                    clicked => { root.apply(); }
+                }
+            }
+        }
+
+        // ── interactive curve canvas ────────────────────────────────────────
+        canvas := Rectangle {
+            vertical-stretch: 1;
+            min-height: 136px;
+            background: Theme.inset;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            clip: true;
+
+            // horizontal grid + Y labels spanning full 0..max-duty range (5 equal bands)
+            for k in 6 : Rectangle {
+                x: root.pad-l;
+                y: root.py(Math.round(k * root.max-duty / 5.0));
+                width: root.plot-w;
+                height: 1px;
+                background: Theme.grid;
+            }
+            for k in 6 : Text {
+                x: 0px;
+                y: root.py(Math.round(k * root.max-duty / 5.0)) - 6px;
+                width: root.pad-l - 6px;
+                text: "" + Math.round(k * root.max-duty / 5.0);
+                font-size: 9px;
+                font-family: Theme.font-mono;
+                color: Theme.text-3;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            // vertical grid at each fixed temperature knot
+            for i in 6 : Rectangle {
+                x: root.px(i);
+                y: root.pad-t;
+                width: 1px;
+                height: root.plot-h;
+                background: Theme.grid;
+            }
+
+            // forbidden zone below factory floor
+            if root.ready : Path {
+                viewbox-width: root.n(canvas.width);
+                viewbox-height: root.n(canvas.height);
+                fit: fill;
+                commands: root.floor-zone-cmd(
+                    root.floor-at(0), root.floor-at(1), root.floor-at(2),
+                    root.floor-at(3), root.floor-at(4), root.floor-at(5));
+                fill: Theme.danger.with-alpha(0.10);
+                stroke: transparent;
+            }
+
+            // allowed span between floor and preview
+            if root.ready : Path {
+                viewbox-width: root.n(canvas.width);
+                viewbox-height: root.n(canvas.height);
+                fit: fill;
+                commands: root.span-cmd(
+                    root.duty-at(0), root.duty-at(1), root.duty-at(2),
+                    root.duty-at(3), root.duty-at(4), root.duty-at(5),
+                    root.floor-at(0), root.floor-at(1), root.floor-at(2),
+                    root.floor-at(3), root.floor-at(4), root.floor-at(5));
+                fill: Theme.accent.with-alpha(0.12);
+                stroke: transparent;
+            }
+
+            // factory reference curve (dashed)
+            if root.ready : Path {
+                viewbox-width: root.n(canvas.width);
+                viewbox-height: root.n(canvas.height);
+                fit: fill;
+                commands: root.line-cmd(
+                    root.floor-at(0), root.floor-at(1), root.floor-at(2),
+                    root.floor-at(3), root.floor-at(4), root.floor-at(5));
+                stroke: Theme.danger.with-alpha(0.60);
+                stroke-width: 1px;
+                stroke-dash-array: [4px, 3px];
+                stroke-line-cap: butt;
+                fill: transparent;
+            }
+
+            // previewed curve
+            if root.ready : Path {
+                viewbox-width: root.n(canvas.width);
+                viewbox-height: root.n(canvas.height);
+                fit: fill;
+                commands: root.line-cmd(
+                    root.duty-at(0), root.duty-at(1), root.duty-at(2),
+                    root.duty-at(3), root.duty-at(4), root.duty-at(5));
+                stroke: root.readonly ? Theme.text-3 : Theme.accent;
+                stroke-width: 2px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                fill: transparent;
+            }
+
+            // live operating point
+            if root.live-temp >= 0 : Rectangle {
+                x: root.live-x();
+                y: root.pad-t;
+                width: 1px;
+                height: root.plot-h;
+                background: Theme.text.with-alpha(0.24);
+            }
+            if root.live-temp >= 0 && root.ready : Rectangle {
+                x: root.live-x() - 4px;
+                y: root.py(root.duty-at-temp()) - 4px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.accent;
+                border-width: 1px;
+                border-color: Theme.inset;
+            }
+
+            // knots
+            for i in 6 : Rectangle {
+                x: root.px(i) - 4px;
+                y: root.py(root.duty-at(i)) - 4px;
+                width: 8px;
+                height: 8px;
+                border-radius: root.locked-at(i) ? 1px : 4px;
+                background: root.locked-at(i) ? Theme.text-3 : Theme.card;
+                border-width: 2px;
+                border-color: root.readonly ? Theme.text-3 : Theme.accent;
+            }
+
+            // single crisp X axis temperature labels (clear 5px below plot baseline, °C unit at right)
+            for i in 6 : Text {
+                x: i == 0 ? root.px(0) - 3px : root.px(i) - 10px;
+                y: root.base-y() + 5px;
+                width: 20px;
+                text: "" + root.temp-at(i);
+                font-size: 9px;
+                font-family: Theme.font-mono;
+                color: Theme.text-3;
+                horizontal-alignment: i == 0 ? left : center;
+                vertical-alignment: center;
+            }
+            Text {
+                x: canvas.width - 24px;
+                y: root.base-y() + 5px;
+                width: 18px;
+                text: "°C";
+                font-size: 9px;
+                font-family: Theme.font-mono;
+                color: Theme.text-3;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            drag-touch := TouchArea {
+                enabled: !root.readonly && !root.pending;
+                mouse-cursor: MouseCursor.crosshair;
+                property <int> drag: -1;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        self.drag = root.nearest(self.mouse-x);
+                    }
+                    if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                        self.drag = -1;
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        if (self.drag < 0) {
+                            self.drag = root.nearest(self.pressed-x);
+                        }
+                        if (self.drag >= 0 && !root.locked-at(self.drag)) {
+                            root.edit(self.drag, root.duty-from-y(self.mouse-y));
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 2x3 numeric stepper grid (guaranteed zero clipping at 960px) ────
+        VerticalLayout {
+            spacing: 5px;
+            for row in 2 : HorizontalLayout {
+                spacing: 5px;
+                for col in 3 : Rectangle {
+                    horizontal-stretch: 1;
+                    height: 50px;
+                    background: Theme.card-secondary;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.card-stroke;
+
+                    VerticalLayout {
+                        padding-left: 5px;
+                        padding-right: 5px;
+                        padding-top: 3px;
+                        padding-bottom: 3px;
+                        spacing: 2px;
+
+                        HorizontalLayout {
+                            height: 13px;
+                            Text {
+                                text: "" + root.temp-at(row * 3 + col) + " °C";
+                                font-size: 10px;
+                                font-family: Theme.font-mono;
+                                font-weight: 500;
+                                color: Theme.text-2;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.locked-at(row * 3 + col) ? "锚点" : ("≥" + root.floor-at(row * 3 + col) + "%");
+                                font-size: 9px;
+                                font-family: Theme.font-mono;
+                                color: Theme.text-3;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        DutyStepper {
+                            duty: root.duty-at(row * 3 + col);
+                            floor: root.floor-at(row * 3 + col);
+                            ceiling: root.max-duty;
+                            locked: root.locked-at(row * 3 + col);
+                            enabled: !root.readonly && !root.pending;
+                            stepped(v) => { root.edit(row * 3 + col, v); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.error != "" : Text {
+            text: root.error;
+            font-size: Theme.font-caption;
+            color: Theme.danger;
+            wrap: word-wrap;
+            height: 16px;
+            overflow: elide;
+        }
+    }
+}

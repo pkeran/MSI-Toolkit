@@ -1,0 +1,186 @@
+// Refined 2026 Fluent Design 2 + Linear/Wootility Neutral-Zinc Luminance System.
+//
+// Surface elevation ladder (desaturated cool-graphite in dark, crisp porcelain in light):
+//   Dark : L0 Shell/Nav (#1C1C1F) -> L1 Content (#232327, seam #19191C)
+//          -> L2 Card (#2B2B30, fine luminous hairline stroke rgba(255,255,255,0.075))
+//          -> L3 Controls (#34343B + 1px top specular bevel)
+//   Light: L0 Shell/Nav (#F3F4F6) -> L1 Content (#F8F9FB, seam #E3E5EA)
+//          -> L2 Card (#FFFFFF, hairline stroke #E4E6EB)
+//          -> L3 Controls (#FFFFFF + subtle bottom elevation rim)
+//
+// Unified corner radius scale (zero capsule-vs-square clash):
+//   radius-sm: 4px · radius: 6px (buttons, pills, chips, nav, segments)
+//   radius-card: 6px (cards, expanders, banners) · radius-lg: 10px (hardware frames)
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    in property <bool> dark: true;
+    in property <bool> reduced-motion: false;
+    in property <bool> high-contrast: false;
+    in property <bool> mica: true;
+    /// System AccentColor overrides (populated from Windows AccentPalette by Rust).
+    in property <color> accent-dark: #58C4FF;
+    in property <color> accent-light: #005FB8;
+
+    public function apply() {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    // ── L0 / L1 Shell & Content Surfaces ────────────────────────────────────
+    out property <color> bg: mica ? transparent : (dark ? #1C1C1F : #F3F4F6);
+    out property <color> topbar: mica ? transparent : (dark ? #1C1C1F : #F3F4F6);
+    out property <color> nav: mica ? transparent : (dark ? #1C1C1F : #F3F4F6);
+    out property <color> nav-hover: dark ? rgba(255, 255, 255, 0.055) : rgba(0, 0, 0, 0.036);
+    out property <color> nav-pressed: dark ? rgba(255, 255, 255, 0.035) : rgba(0, 0, 0, 0.024);
+    out property <color> nav-selected: dark ? rgba(255, 255, 255, 0.07) : rgba(0, 0, 0, 0.045);
+
+    out property <color> content: dark ? #232327 : #F8F9FB;
+    out property <color> content-seam: dark ? #19191C : #E3E5EA;
+
+    // ── L2 Card Surfaces ────────────────────────────────────────────────────
+    out property <color> card: dark ? #2B2B30 : #FFFFFF;
+    out property <color> card-secondary: dark ? #26262B : #F5F6F8;
+    out property <color> card-hover: dark ? #323238 : #FAFBFD;
+    out property <color> card-pressed: dark ? #28282D : #F0F2F5;
+    out property <color> card-disabled: dark ? #25252A : #F4F5F7;
+    out property <color> inset: dark ? #1A1A1E : #EFF1F4;
+    out property <color> flyout: dark ? #2D2D33 : #FFFFFF;
+
+    // ── L3 Elevated Control Surfaces (Buttons / Segmented / Keycaps) ────────
+    out property <color> btn-bg: dark ? #34343B : #FFFFFF;
+    out property <color> btn-hover: dark ? #3D3D46 : #F8F9FB;
+    out property <color> btn-pressed: dark ? #2C2C32 : #EFF1F5;
+    out property <color> btn-disabled: dark ? #29292F : #F3F4F6;
+    out property <color> btn-border: dark ? rgba(255, 255, 255, 0.095) : #D9DCE3;
+    out property <color> btn-bevel-top: dark ? rgba(255, 255, 255, 0.09) : transparent;
+    out property <color> btn-bevel-bottom: dark ? transparent : rgba(0, 0, 0, 0.10);
+
+    out property <color> subtle-hover: dark ? rgba(255, 255, 255, 0.065) : rgba(0, 0, 0, 0.04);
+    out property <color> subtle-pressed: dark ? rgba(255, 255, 255, 0.04) : rgba(0, 0, 0, 0.025);
+    out property <color> control-hover: subtle-hover;
+    out property <color> segment-track: dark ? #1F1F23 : #EBEDF1;
+    out property <color> pill-bg: dark ? #27272C : #FFFFFF;
+    out property <color> pill-border: dark ? rgba(255, 255, 255, 0.085) : #DFE2E8;
+
+    // ── Strokes & Dividers (crisp luminous hairlines in dark mode) ──────────
+    out property <color> card-stroke: dark ? rgba(255, 255, 255, 0.075) : #E4E6EB;
+    out property <color> card-stroke-hover: dark ? rgba(255, 255, 255, 0.16) : #CFD3DC;
+    out property <color> stroke: card-stroke;
+    out property <color> stroke-strong: dark ? rgba(255, 255, 255, 0.18) : #C6CBD5;
+    out property <color> divider: dark ? rgba(255, 255, 255, 0.075) : rgba(0, 0, 0, 0.06);
+    out property <color> grid: dark ? rgba(255, 255, 255, 0.06) : #E5E7EC;
+
+    // ── Text (anti-halation soft white in dark mode, WCAG AAA/AA) ───────────
+    out property <color> text: dark ? #F4F4F6 : #18191C;
+    out property <color> text-2: dark ? #A8A8B2 : #525660;
+    out property <color> text-3: dark ? #787883 : #747984;
+    out property <color> text-disabled: dark ? #56565F : #A0A5B0;
+
+    // ── Accent (Win11 SystemAccentColorLight2 / Dark1) ──────────────────────
+    out property <color> accent: dark ? accent-dark : accent-light;
+    out property <color> accent-hover: dark ? accent-dark.brighter(0.10) : accent-light.brighter(0.12);
+    out property <color> accent-pressed: dark ? accent-dark.darker(0.12) : accent-light.darker(0.14);
+    out property <color> on-accent: dark ? #0B1219 : #FFFFFF;
+    out property <color> accent-bevel-top: dark ? rgba(255, 255, 255, 0.28) : rgba(255, 255, 255, 0.16);
+    out property <color> accent-bevel-bottom: dark ? rgba(0, 0, 0, 0.22) : rgba(0, 0, 0, 0.24);
+    out property <color> accent-surface: dark ? #1E2E3A : #E6F2FC;
+    out property <color> accent-surface-strong: dark ? #263B4B : #D4E8F8;
+
+    // ── Critical / Destructive Actions (solid confirm + restrained subtle) ──
+    out property <color> critical-bg: dark ? #B83228 : #C42B1C;
+    out property <color> critical-hover: dark ? #CC3C31 : #D43B2C;
+    out property <color> critical-pressed: dark ? #96261E : #A62215;
+    out property <color> on-critical: #FFFFFF;
+    out property <color> danger-btn-bg: dark ? #342124 : #FDF0F1;
+    out property <color> danger-btn-hover: dark ? #42272B : #FBE2E4;
+    out property <color> danger-btn-pressed: dark ? #2B1B1E : #F6D2D5;
+    out property <color> danger-btn-border: dark ? rgba(248, 113, 113, 0.28) : rgba(196, 43, 28, 0.26);
+
+    // ── Semantic Status (calm desaturated dark-mode calibration) ────────────
+    out property <color> ok: dark ? #3ECF8E : #0E7A3E;
+    out property <color> warn: dark ? #EAB348 : #9D5D00;
+    out property <color> warn-icon: dark ? #F2C14E : #9D5D00;
+    out property <color> danger: dark ? #F87171 : #C42B1C;
+    out property <color> info: accent;
+    out property <color> ok-surface: dark ? #1B2E26 : #E3F6EA;
+    out property <color> warn-surface: dark ? #302819 : #FEF4D6;
+    out property <color> danger-surface: dark ? #342023 : #FCEAEB;
+    out property <color> info-surface: dark ? #1E2D38 : #E5F1FB;
+    out property <color> muted-surface: dark ? #28282E : #F0F2F5;
+
+    // ── Typography ──────────────────────────────────────────────────────────
+    out property <string> font-ui: "Segoe UI Variable Text";
+    out property <string> font-display: "Segoe UI Variable Display";
+    out property <string> font-mono: "Cascadia Mono";
+
+    out property <length> font-micro: 11px;
+    out property <length> font-caption: 12px;
+    out property <length> font-body: 13px;
+    out property <length> font-card-title: 14px;
+    out property <length> font-group: 14px;
+    out property <length> font-title: 16px;
+    out property <length> font-page: 22px;
+    out property <length> font-metric: 22px;
+
+    // ── Metrics (Magpie 1:12 vertical rhythm) ───────────────────────────────
+    out property <length> topbar-h: 40px;
+    out property <length> nav-w: 184px;
+    out property <length> nav-w-collapsed: 48px;
+    out property <length> nav-item-h: 36px;
+    out property <length> page-pad: 20px;
+
+    out property <length> gap-card: 2px;
+    out property <length> gap-group-head: 8px;
+    out property <length> gap-group: 24px;
+    out property <length> gap: 8px;
+    out property <length> gap-sm: 4px;
+    out property <length> gap-lg: 12px;
+
+    out property <length> card-h: 66px;
+    out property <length> card-h-compact: 56px;
+    out property <length> card-min-h: 56px;
+    out property <length> card-max-h: 66px;
+    out property <length> row-h: 26px;
+    out property <length> control-h: 32px;
+
+    out property <length> radius-sm: 4px;
+    out property <length> radius: 6px;
+    out property <length> radius-card: 6px;
+    out property <length> radius-lg: 10px;
+    out property <length> pill-h: 24px;
+
+    // ── Motion (Magpie / WinUI timings; 0ms under reduced-motion) ───────────
+    out property <duration> dur-hover: reduced-motion ? 0ms : 83ms;
+    out property <duration> dur-nav: reduced-motion ? 0ms : 150ms;
+    out property <duration> dur-collapse: reduced-motion ? 0ms : 167ms;
+    out property <duration> dur-expand: reduced-motion ? 0ms : 333ms;
+    out property <duration> dur-fast: dur-hover;
+    out property <duration> dur: dur-nav;
+    out property <duration> dur-slow: dur-collapse;
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    public pure function severity-color(level: int) -> color {
+        if level == 1 { return warn; }
+        if level == 2 { return danger; }
+        if level == 3 { return ok; }
+        if level == 4 { return info; }
+        return text-2;
+    }
+
+    public pure function severity-icon-color(level: int) -> color {
+        if level == 1 { return warn-icon; }
+        if level == 2 { return danger; }
+        if level == 3 { return ok; }
+        if level == 4 { return info; }
+        return text-2;
+    }
+
+    public pure function severity-surface(level: int) -> color {
+        if level == 1 { return warn-surface; }
+        if level == 2 { return danger-surface; }
+        if level == 3 { return ok-surface; }
+        if level == 4 { return info-surface; }
+        return muted-surface;
+    }
+}

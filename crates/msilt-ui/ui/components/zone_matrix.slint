@@ -1,0 +1,360 @@
+// `ZoneMatrix` — Wootility v5 faithful floating physical MSI Vector 17 HX
+// full-size ANSI + Numpad keyboard (matte solid keycaps, tight uniform bezel,
+// luminance-adaptive legends, Wootility corner selection dots).
+
+import { Theme } from "../theme.slint";
+import { FluentButton } from "fluent_button.slint";
+import { Chip } from "primitives.slint";
+
+component PhysKey inherits Rectangle {
+    in property <string> label: "";
+    in property <int> zone: 0;
+    in property <[color]> zones: [];
+    in property <[bool]> selected: [];
+    in property <bool> enabled: true;
+    in property <float> units: 1.0;
+    in property <length> key-h: 36px;
+    callback picked(zone: int, additive: bool);
+
+    property <color> raw-led: root.zone >= 0 && root.zone < root.zones.length ? root.zones[root.zone] : #383A40;
+    property <bool> is-selected: root.zone >= 0 && root.zone < root.selected.length ? root.selected[root.zone] : false;
+    property <bool> is-off: root.raw-led.red < 12 && root.raw-led.green < 12 && root.raw-led.blue < 12;
+
+    // True 1:1 zone RGB color on keycap face (neutral unlit cap only when zone is black/off)
+    property <color> cap-fill: root.is-off
+        ? (Theme.dark ? #3A3C42 : #C9CDD5)
+        : root.raw-led;
+
+    // Perceptual luminance for razor-crisp dark/light keycap legends (just like Wootility gray vs red/green caps)
+    property <float> luma: (0.299 * root.cap-fill.red + 0.587 * root.cap-fill.green + 0.114 * root.cap-fill.blue);
+
+    horizontal-stretch: root.units;
+    height: root.key-h;
+    border-radius: 5px;
+    background: key-ta.pressed ? root.cap-fill.darker(0.14)
+              : key-ta.has-hover ? root.cap-fill.brighter(0.08)
+              : root.cap-fill;
+    border-width: root.is-selected ? 1.5px : 0px;
+    border-color: root.is-selected ? (Theme.dark ? #F4F4F6 : #18191C) : transparent;
+    animate background { duration: Theme.dur-hover; easing: ease-out; }
+    clip: true;
+
+    // Subtle top hairline sheen + 2px matte lower keycap shadow lip
+    Rectangle {
+        x: 1px;
+        y: 0px;
+        width: max(0px, parent.width - 2px);
+        height: 1px;
+        background: rgba(255, 255, 255, 0.14);
+    }
+    Rectangle {
+        x: 0px;
+        y: max(0px, parent.height - 2px);
+        width: parent.width;
+        height: 2px;
+        background: rgba(0, 0, 0, 0.22);
+    }
+
+    // Wootility v5 iconic top-right circular selection indicator badge
+    if root.is-selected : Rectangle {
+        x: max(2px, parent.width - 10px);
+        y: 3px;
+        width: 7px;
+        height: 7px;
+        border-radius: 3.5px;
+        background: #E8EAEE;
+        border-width: 1.5px;
+        border-color: #1F2024;
+    }
+
+    Text {
+        x: 2px;
+        y: 0px;
+        width: max(0px, parent.width - 4px);
+        height: max(0px, parent.height - 1px);
+        text: root.label;
+        font-size: root.key-h < 28px ? 9px : (root.units >= 1.75 ? 10.5px : 11px);
+        font-weight: 500;
+        font-family: Theme.font-ui;
+        color: root.luma > 118.0 ? #1C1D21 : rgba(244, 245, 248, 0.90);
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    key-ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.picked(root.zone, e.modifiers.shift || e.modifiers.control);
+            }
+        }
+    }
+}
+
+export component ZoneMatrix inherits Rectangle {
+    in property <[color]> zones: [];
+    in property <[bool]> selected: [];
+    in property <bool> enabled: true;
+    in property <bool> conflict: false;
+    callback toggle(index: int, additive: bool);
+    callback select-all();
+    callback select-none();
+
+    background: transparent;
+    horizontal-stretch: 1;
+
+    pure function zone-is-selected(i: int) -> bool {
+        if i < 0 || i >= root.selected.length { return false; }
+        return root.selected[i];
+    }
+
+    pure function count-selected() -> int {
+        return (root.zone-is-selected(0) ? 1 : 0) + (root.zone-is-selected(1) ? 1 : 0)
+             + (root.zone-is-selected(2) ? 1 : 0) + (root.zone-is-selected(3) ? 1 : 0)
+             + (root.zone-is-selected(4) ? 1 : 0) + (root.zone-is-selected(5) ? 1 : 0)
+             + (root.zone-is-selected(6) ? 1 : 0) + (root.zone-is-selected(7) ? 1 : 0)
+             + (root.zone-is-selected(8) ? 1 : 0) + (root.zone-is-selected(9) ? 1 : 0)
+             + (root.zone-is-selected(10) ? 1 : 0) + (root.zone-is-selected(11) ? 1 : 0)
+             + (root.zone-is-selected(12) ? 1 : 0) + (root.zone-is-selected(13) ? 1 : 0)
+             + (root.zone-is-selected(14) ? 1 : 0) + (root.zone-is-selected(15) ? 1 : 0)
+             + (root.zone-is-selected(16) ? 1 : 0) + (root.zone-is-selected(17) ? 1 : 0)
+             + (root.zone-is-selected(18) ? 1 : 0) + (root.zone-is-selected(19) ? 1 : 0)
+             + (root.zone-is-selected(20) ? 1 : 0) + (root.zone-is-selected(21) ? 1 : 0)
+             + (root.zone-is-selected(22) ? 1 : 0) + (root.zone-is-selected(23) ? 1 : 0);
+    }
+
+    VerticalLayout {
+        spacing: 10px;
+
+        // Clean Wootility-style toolbar above keyboard
+        HorizontalLayout {
+            spacing: 8px;
+            height: 28px;
+
+            Text {
+                text: "24 区背光键盘";
+                font-size: Theme.font-group;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            if root.conflict : VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: "官软占用";
+                    level: 2;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+
+            VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: "已选 " + root.count-selected() + " / 24 区";
+                    level: 0;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                FluentButton {
+                    text: "全选";
+                    compact: true;
+                    variant: 0;
+                    width: 80px;
+                    enabled: root.enabled;
+                    clicked => { root.select-all(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                FluentButton {
+                    text: "取消选择";
+                    compact: true;
+                    variant: 0;
+                    width: 80px;
+                    enabled: root.enabled;
+                    clicked => { root.select-none(); }
+                }
+            }
+        }
+
+        // Wootility v5 floating matte-graphite / aluminum keyboard chassis (directly on canvas)
+        Rectangle {
+            background: Theme.dark ? #2B2C31 : #E5E7ED;
+            border-radius: 10px;
+            border-width: 1.5px;
+            border-color: root.conflict ? Theme.danger : (Theme.dark ? #3A3B42 : #CFD3DC);
+            clip: true;
+
+            // Subtle lower deck bevel edge (Wootility chassis depth)
+            Rectangle {
+                x: 0px;
+                y: max(0px, parent.height - 4px);
+                width: parent.width;
+                height: 4px;
+                background: Theme.dark ? #1E1F23 : #D4D8E1;
+            }
+
+            // Inner tight switch well
+            VerticalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: 9px;
+                padding-bottom: 12px;
+
+                Rectangle {
+                    background: Theme.dark ? #1F2024 : #D4D8E0;
+                    border-radius: 6px;
+
+                    VerticalLayout {
+                        padding: 5px;
+                        spacing: 4px;
+
+                        // ── Row 0: Slim Function bar (15u + 4u) ── Zones 0..5
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "Esc"; zone: 0; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F1"; zone: 0; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F2"; zone: 0; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F3"; zone: 1; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F4"; zone: 1; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F5"; zone: 2; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F6"; zone: 2; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F7"; zone: 2; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F8"; zone: 3; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F9"; zone: 3; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F10"; zone: 3; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F11"; zone: 4; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F12"; zone: 4; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "PrtSc"; zone: 4; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Del"; zone: 4; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "Home"; zone: 5; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "PgUp"; zone: 5; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "PgDn"; zone: 5; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "End"; zone: 5; units: 1.0; key-h: 25px; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+
+                        // Subtle F-row deck separation
+                        Rectangle { height: 2px; background: transparent; }
+
+                        // ── Row 1: Number row (15u + 4u) ── Zones 0..5
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "`"; zone: 0; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "1"; zone: 0; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "2"; zone: 0; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "3"; zone: 1; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "4"; zone: 1; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "5"; zone: 1; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "6"; zone: 2; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "7"; zone: 2; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "8"; zone: 2; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "9"; zone: 3; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "0"; zone: 3; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "-"; zone: 3; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "="; zone: 4; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Backspace"; zone: 4; units: 2.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "Num"; zone: 5; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "/"; zone: 5; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "*"; zone: 5; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "-"; zone: 5; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+
+                        // ── Row 2: QWERTY row (15u + 4u) ── Zones 6..11
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "Tab"; zone: 6; units: 1.5; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Q"; zone: 6; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "W"; zone: 6; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "E"; zone: 7; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "R"; zone: 7; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "T"; zone: 7; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Y"; zone: 8; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "U"; zone: 8; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "I"; zone: 8; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "O"; zone: 9; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "P"; zone: 9; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "["; zone: 9; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "]"; zone: 10; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "\\"; zone: 10; units: 1.5; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "7"; zone: 11; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "8"; zone: 11; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "9"; zone: 11; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "+"; zone: 11; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+
+                        // ── Row 3: ASDF Home row (15u + 4u) ── Zones 12..17
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "Caps"; zone: 12; units: 1.75; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "A"; zone: 12; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "S"; zone: 12; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "D"; zone: 13; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "F"; zone: 13; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "G"; zone: 13; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "H"; zone: 14; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "J"; zone: 14; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "K"; zone: 14; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "L"; zone: 15; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: ";"; zone: 15; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "'"; zone: 15; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Enter"; zone: 16; units: 2.25; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "4"; zone: 17; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "5"; zone: 17; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "6"; zone: 17; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "+"; zone: 17; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+
+                        // ── Row 4: ZXCV Shift row (15u + 4u) ── Zones 18..23
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "L-Shift"; zone: 18; units: 2.25; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Z"; zone: 18; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "X"; zone: 18; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "C"; zone: 19; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "V"; zone: 19; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "B"; zone: 19; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "N"; zone: 20; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "M"; zone: 20; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: ","; zone: 20; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "."; zone: 21; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "/"; zone: 21; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "R-Shift"; zone: 22; units: 1.75; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "↑"; zone: 22; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "1"; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "2"; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "3"; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Ent"; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+
+                        // ── Row 5: Bottom Space + Arrows row (15u + 4u) ── Zones 18..23
+                        HorizontalLayout {
+                            spacing: 4px;
+                            PhysKey { label: "L-Ctrl"; zone: 18; units: 1.25; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Win"; zone: 18; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "L-Alt"; zone: 19; units: 1.25; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Spacebar"; zone: 20; units: 5.5; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "R-Alt"; zone: 21; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Fn"; zone: 21; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "R-Ctrl"; zone: 21; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "←"; zone: 22; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "↓"; zone: 22; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "→"; zone: 22; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
+                            PhysKey { label: "0"; zone: 23; units: 2.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "."; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            PhysKey { label: "Ent"; zone: 23; units: 1.0; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
