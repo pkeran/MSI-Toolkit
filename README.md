@@ -9,7 +9,7 @@
   - 全部可执行文件 **0 禁止 GPU/dGPU DLL 导入**，纯软件光栅 UI（Slint + DWM Mica）不唤醒独立显卡；
   - 零第三方内核驱动，完全兼容 Secure Boot / HVCI / Microsoft Vulnerable Driver Blocklist。
 - **完整硬件与系统控制**：
-  - **性能与风扇**：性能模式切换、Cooler Boost、CPU/GPU 双通道 6 节点风扇曲线编辑与回读校验；
+  - **性能与风扇**：性能模式切换、强冷散热、CPU/GPU 双通道 6 节点风扇曲线编辑与回读校验；
   - **显卡与显示**：面板刷新率（60/240 Hz）、背光亮度、出厂 14 套 MHC2 校色档一键切换、GPU MUX 状态视图；
   - **电池与电源**：真实 IOCTL 电池健康度/容量/电压/充放电功率、充电上限保护；
   - **键盘灯效**：Wootility 风格全尺寸 24 区 Per-Zone RGB 物理键盘视图 + 可拖拽 2D HSV 调色盘与色相条；
@@ -43,6 +43,6 @@
 .\scripts\package.ps1
 
 # 推送新版本 Tag 触发 GitHub Actions 自动构建并发布 Release
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```

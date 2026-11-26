@@ -617,8 +617,8 @@ impl Coordinator {
         let desktop = self.desktop.as_ref().ok_or(ErrorCode::BackendUnavailable)?;
         let (done, confirmation) = sync_channel(1);
         if !desktop.send(UiEvent::ShowOsd {
-            title: "MSI Toolkit",
-            detail: "OSD test".into(),
+            title: "MSI-Toolkit",
+            detail: "屏幕悬浮提示测试".into(),
             duration_ms: self.config.osd.duration_ms,
             done: Some(done),
         }) {
@@ -1511,7 +1511,7 @@ impl Coordinator {
                 .map(|mode| ("性能模式", mode_name(mode).into())),
             OsdKind::CoolerBoost => hw
                 .cooler_boost
-                .map(|on| ("强冷模式", if on { "已开启" } else { "已关闭" }.into())),
+                .map(|on| ("强冷散热", if on { "已开启" } else { "已关闭" }.into())),
             OsdKind::DisplayRefreshRate => hw
                 .display_refresh_hz
                 .map(|hz| ("屏幕刷新率", format!("{hz} Hz"))),

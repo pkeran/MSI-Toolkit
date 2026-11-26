@@ -1,6 +1,6 @@
-// MSI-Toolkit main shell — Windows 11 Fluent Design 2 / Blinue Magpie chrome.
-// Unified Mica topbar + borderless NavigationView rail (with floating 3x16
-// accent pill) + Magpie centered reading measure on settings pages.
+// MSI-Toolkit main shell — Windows 11 Fluent Design 2 / WinUI 3 responsive layout.
+// Unified Mica topbar + borderless NavigationView rail (WinUI 3 1008px breakpoint)
+// + centered fluid max-width containers + natural ScrollView height + floating Toast overlay.
 
 import { Theme } from "theme.slint";
 import { Icon, Glyphs } from "icons.slint";
@@ -9,6 +9,7 @@ import { ScrollView } from "std-widgets.slint";
 import { NavItem } from "components/nav_item.slint";
 import { StatusPill } from "components/status_pill.slint";
 import { Banner } from "components/banner.slint";
+import { Toast } from "components/toast.slint";
 import { DashboardPage } from "pages/dashboard.slint";
 import { PerformancePage } from "pages/performance.slint";
 import { DisplayPage } from "pages/display.slint";
@@ -27,35 +28,25 @@ export component AppWindow inherits Window {
     title: "MSI-Toolkit";
     preferred-width: 1120px;
     preferred-height: 720px;
-    min-width: 960px;
-    min-height: 620px;
+    min-width: 820px;
+    min-height: 580px;
     background: Theme.bg;
     default-font-family: Theme.font-ui;
     default-font-size: Theme.font-body;
     forward-focus: keys;
 
-    property <[string]> nav-labels: ["总览", "性能与风扇", "显卡与显示", "电池与电源", "键盘灯效", "自动化", "监控与 OSD", "系统与工具"];
+    property <[string]> nav-labels: ["总览", "性能与风扇", "显卡与显示", "电池与电源", "键盘灯效", "自动化", "监控与提示", "系统与工具"];
     property <[string]> nav-glyphs: ["dashboard", "gauge", "display", "battery", "keyboard", "bolt", "pulse", "sliders"];
-    property <bool> collapsed: AppState.nav-collapsed || root.width < 980px;
+    // WinUI 3 NavigationView Large breakpoint (1008px); no width animation during resize to avoid full-window layout thrashing.
+    property <bool> collapsed: AppState.nav-collapsed || root.width < 1008px;
     property <length> nav-width: collapsed ? Theme.nav-w-collapsed : Theme.nav-w;
-    animate nav-width { duration: Theme.dur-nav; easing: cubic-bezier(0, 0, 0, 1); }
 
-    /// Magpie centered 960px reading measure on settings pages (Display/Battery/Automation/System).
+    // Mature Win11 Settings / PowerToys reading measures:
+    // Settings list pages cap at 1000px; visual workspace pages cap at 1200px (never stretch absurdly on ultrawide).
     property <bool> settings-measure: AppState.page == 2 || AppState.page == 3 || AppState.page == 5 || AppState.page == 7;
+    property <length> measure-w: root.settings-measure ? 1000px : 1200px;
     property <bool> sys-oem-expanded: false;
     property <bool> sys-diag-expanded: false;
-
-    property <length> page-min-h: AppState.page == 0 ? 480px
-                                : AppState.page == 1 ? 490px
-                                : AppState.page == 2 ? 520px
-                                : AppState.page == 3 ? 520px
-                                : AppState.page == 4 ? 548px
-                                : AppState.page == 5 ? max(460px, 340px + AppState.auto-rules.length * 68px)
-                                : AppState.page == 6 ? 480px
-                                : (1040px
-                                    + AppState.oem-packages.length * 62px
-                                    + (root.sys-oem-expanded ? max(52px, AppState.oem-items.length * 44px) : 0px)
-                                    + (root.sys-diag-expanded ? 102px : 0px));
 
     keys := FocusScope {
         key-pressed(e) => {
@@ -81,17 +72,16 @@ export component AppWindow inherits Window {
         height: root.height;
         spacing: 0px;
 
-        // ── Top status bar (brand locked to nav column; unified telemetry cluster right-aligned) ─
+        // ── Top status bar (brand aligned with nav column; right-aligned telemetry pills) ─
         Rectangle {
             height: Theme.topbar-h;
             background: Theme.topbar;
 
             HorizontalLayout {
                 padding-left: 0px;
-                padding-right: 24px;
+                padding-right: 20px;
                 spacing: 0px;
 
-                // Left brand slot strictly matched to nav-rail width (never straddles the vertical seam)
                 Rectangle {
                     width: root.nav-width;
                     background: transparent;
@@ -111,7 +101,6 @@ export component AppWindow inherits Window {
                                 background: toggle-ta.pressed ? Theme.nav-pressed
                                           : toggle-ta.has-hover ? Theme.nav-hover
                                           : transparent;
-                                animate background { duration: Theme.dur-hover; easing: ease-out; }
                                 accessible-role: button;
                                 accessible-label: "展开或收起导航";
 
@@ -142,26 +131,24 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Open negative space above page title (clean Magpie / Win11 Settings breathing room)
                 Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                // Unified right-aligned hardware telemetry & daemon status cluster
                 HorizontalLayout {
                     horizontal-stretch: 0;
                     spacing: 6px;
 
-                    VerticalLayout {
+                    if root.width >= 900px : VerticalLayout {
                         alignment: center;
                         StatusPill {
                             glyph: "gauge";
                             value: Fmt.mode-name(AppState.performance-mode);
                         }
                     }
-                    VerticalLayout {
+                    if root.width >= 960px : VerticalLayout {
                         alignment: center;
                         StatusPill {
                             glyph: "power";
-                            value: AppState.power-source == 0 ? "AC" : (AppState.power-source == 1 ? "DC" : "电源未知");
+                            value: AppState.power-source == 0 ? "已接电源" : (AppState.power-source == 1 ? "使用电池" : "电源未知");
                         }
                     }
                     VerticalLayout {
@@ -245,99 +232,144 @@ export component AppWindow inherits Window {
                     border-radius: 2px;
                     background: Theme.accent;
                     y: (AppState.page == 7 ? nav-rail.footer-y : (nav-rail.inset + nav-rail.row-step * AppState.page)) + 10px;
-                    animate y { duration: Theme.dur-nav; easing: cubic-bezier(0, 0, 0, 1); }
+                    animate y { duration: Theme.dur-nav; easing: cubic-bezier(0.16, 1.0, 0.3, 1.0); }
                 }
             }
 
-            Rectangle {
+            workspace := Rectangle {
                 horizontal-stretch: 1;
                 background: Theme.content;
+                clip: true;
 
-                // Subtle Magpie 1px left + top dark seam
+                property <length> pad-x: workspace.width >= 900px ? 24px : 16px;
+                property <length> header-w: min(max(320px, workspace.width - 2 * workspace.pad-x), root.measure-w);
+
+                // Subtle 1px left + top seam
                 Rectangle { x: 0px; y: 0px; width: 1px; height: parent.height; background: Theme.content-seam; }
                 Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.content-seam; }
 
                 VerticalLayout {
-                    padding-left: 24px;
-                    padding-right: 24px;
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
                     padding-top: 16px;
-                    padding-bottom: 16px;
-                    spacing: 14px;
+                    spacing: 12px;
 
-                    if AppState.banner-visible : Banner {
-                        level: AppState.banner-level;
-                        title: AppState.banner-title;
-                        text: AppState.banner-text;
-                        action: AppState.banner-action;
-                        activate => { AppState.command(61, 0, 0); }
+                    // Persistent alert banner (ONLY for actionable blockers; aligned to content measure)
+                    if AppState.banner-visible : Rectangle {
+                        height: 40px;
+                        background: transparent;
+
+                        Banner {
+                            x: (parent.width - workspace.header-w) / 2;
+                            y: 0px;
+                            width: workspace.header-w;
+                            level: AppState.banner-level;
+                            title: AppState.banner-title;
+                            text: AppState.banner-text;
+                            action: AppState.banner-action;
+                            activate => { AppState.command(61, 0, 0); }
+                        }
                     }
 
-                    // Clean page header (no redundant descriptive caption)
-                    HorizontalLayout {
+                    // Page header aligned cleanly on the exact same vertical axis as cards below
+                    Rectangle {
                         height: 30px;
-                        spacing: 12px;
-                        Text {
-                            text: AppState.page-title();
-                            font-size: Theme.font-page;
-                            font-weight: 600;
-                            color: Theme.text;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        if AppState.demo : Text {
-                            text: "演示";
-                            color: Theme.text-3;
-                            font-size: Theme.font-caption;
-                            vertical-alignment: center;
-                        }
-                        if AppState.diagnostic : Text {
-                            text: "只读管道";
-                            color: Theme.warn;
-                            font-size: Theme.font-caption;
-                            vertical-alignment: center;
+                        background: transparent;
+
+                        HorizontalLayout {
+                            x: (parent.width - workspace.header-w) / 2;
+                            y: 0px;
+                            width: workspace.header-w;
+                            height: 30px;
+                            spacing: 12px;
+
+                            Text {
+                                text: AppState.page-title();
+                                font-size: Theme.font-page;
+                                font-weight: 600;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            if AppState.demo : Text {
+                                text: "演示模式";
+                                color: Theme.text-3;
+                                font-size: Theme.font-caption;
+                                vertical-alignment: center;
+                            }
+                            if AppState.diagnostic : Text {
+                                text: "仅查看模式";
+                                color: Theme.warn;
+                                font-size: Theme.font-caption;
+                                vertical-alignment: center;
+                            }
                         }
                     }
 
-                    // Scrollable page body (anchored at 0,0; centered 1000px reading measure on settings pages)
+                    // Full-width ScrollView so the scrollbar sits cleanly on the window's right edge;
+                    // natural preferred-height guarantees zero clipping on any page or window height.
                     scroll := ScrollView {
                         vertical-stretch: 1;
                         content-width: scroll.visible-width;
-                        content-height: max(scroll.visible-height, root.page-min-h);
+                        content-height: max(scroll.visible-height, page-host.preferred-height);
 
-                        Rectangle {
-                            x: 0px;
+                        property <length> inner-w: min(max(320px, scroll.visible-width - 2 * workspace.pad-x), root.measure-w);
+                        property <length> avail-h: max(360px, scroll.visible-height - 20px);
+
+                        page-host := VerticalLayout {
+                            x: (scroll.visible-width - scroll.inner-w) / 2;
                             y: 0px;
-                            width: scroll.visible-width;
-                            height: max(scroll.visible-height, root.page-min-h);
-                            background: transparent;
+                            width: scroll.inner-w;
+                            padding-bottom: 20px;
+                            alignment: start;
 
-                            page-frame := Rectangle {
-                                property <length> inner-w: root.settings-measure ? min(parent.width, 960px) : parent.width;
-                                x: (parent.width - inner-w) / 2;
-                                y: 0px;
-                                width: inner-w;
-                                height: parent.height;
-                                background: transparent;
-
-                                if AppState.page == 0 : DashboardPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 1 : PerformancePage { width: parent.width; height: parent.height; }
-                                if AppState.page == 2 : DisplayPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 3 : BatteryPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 4 : LightingPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 5 : AutomationPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 6 : MonitorPage { width: parent.width; height: parent.height; }
-                                if AppState.page == 7 : SystemPage {
-                                    width: parent.width;
-                                    height: parent.height;
-                                    oem-expanded <=> root.sys-oem-expanded;
-                                    diag-expanded <=> root.sys-diag-expanded;
-                                }
+                            if AppState.page == 0 : DashboardPage {
+                                width: scroll.inner-w;
+                                viewport-h: scroll.avail-h;
+                            }
+                            if AppState.page == 1 : PerformancePage {
+                                width: scroll.inner-w;
+                                viewport-h: scroll.avail-h;
+                            }
+                            if AppState.page == 2 : DisplayPage {
+                                width: scroll.inner-w;
+                            }
+                            if AppState.page == 3 : BatteryPage {
+                                width: scroll.inner-w;
+                            }
+                            if AppState.page == 4 : LightingPage {
+                                width: scroll.inner-w;
+                            }
+                            if AppState.page == 5 : AutomationPage {
+                                width: scroll.inner-w;
+                            }
+                            if AppState.page == 6 : MonitorPage {
+                                width: scroll.inner-w;
+                                viewport-h: scroll.avail-h;
+                            }
+                            if AppState.page == 7 : SystemPage {
+                                width: scroll.inner-w;
+                                oem-expanded <=> root.sys-oem-expanded;
+                                diag-expanded <=> root.sys-diag-expanded;
                             }
                         }
                     }
                 }
+
+                // ── Floating animated Toast overlay (0px layout shift, smooth fade in/out) ─
+                Toast {
+                    x: max(workspace.pad-x, workspace.width - self.width - workspace.pad-x);
+                    anchor-y: AppState.banner-visible ? 62px : 10px;
+                    max-w: min(400px, max(220px, workspace.width - 2 * workspace.pad-x));
+                    shown: AppState.toast-visible;
+                    level: AppState.toast-level;
+                    title: AppState.toast-title;
+                    text: AppState.toast-text;
+                    dismiss => { AppState.command(62, 0, 0); }
+                }
             }
         }
     }
-
 }

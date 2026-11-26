@@ -27,8 +27,6 @@ export component SettingsCard inherits Rectangle {
                 : (root.interactive && ta.pressed) ? Theme.stroke-strong
                 : (root.interactive && ta.has-hover) ? Theme.card-stroke-hover
                 : Theme.card-stroke;
-    animate background { duration: Theme.dur-hover; easing: ease-out; }
-    animate border-color { duration: Theme.dur-hover; easing: ease-out; }
 
     ta := TouchArea {
         enabled: root.interactive && root.enabled;

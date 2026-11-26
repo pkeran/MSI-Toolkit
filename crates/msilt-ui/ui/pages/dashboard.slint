@@ -1,13 +1,48 @@
-// Page 0: Dashboard — responsive 2/3-column Magpie horizontal control grid +
-// expanding temperature trend card + tightly-docked telemetry strip.
+// Page 0: Dashboard — responsive 2/3-column horizontal control grid +
+// clamped temperature trend card + tightly-docked telemetry strip.
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
-import { Switch, Slider, ComboBox } from "std-widgets.slint";
+import { Slider, ComboBox } from "std-widgets.slint";
 import { CompactCard } from "../components/compact_card.slint";
 import { FluentButton } from "../components/fluent_button.slint";
+import { FluentToggle } from "../components/fluent_toggle.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { Sparkline } from "../components/sparkline.slint";
+
+component BrightnessControlCard inherits Rectangle {
+    height: 68px;
+    horizontal-stretch: 1;
+    background: transparent;
+
+    property <bool> dragging: false;
+    property <int> draft: 0;
+    property <int> shown: root.dragging ? root.draft : AppState.brightness;
+
+    CompactCard {
+        glyph: "lighting";
+        title: "屏幕亮度";
+        subtitle: Fmt.pct(root.shown);
+        Slider {
+            width: 124px;
+            value: max(0, AppState.brightness);
+            minimum: 0;
+            maximum: 100;
+            step: 1;
+            enabled: AppState.cap-brightness && AppState.brightness >= 0 && AppState.interactive;
+            changed(v) => {
+                root.dragging = true;
+                root.draft = Math.round(v);
+            }
+            released(v) => {
+                root.dragging = false;
+                if Math.round(v) != AppState.brightness {
+                    AppState.command(24, Math.round(v), 0);
+                }
+            }
+        }
+    }
+}
 
 component DashboardControl inherits Rectangle {
     in property <int> kind;
@@ -18,7 +53,7 @@ component DashboardControl inherits Rectangle {
         glyph: "gauge";
         title: "性能模式";
         ComboBox {
-            width: 128px;
+            width: 124px;
             model: AppState.mode-labels;
             current-index: AppState.mode-choice;
             enabled: AppState.cap-performance && AppState.interactive;
@@ -27,10 +62,10 @@ component DashboardControl inherits Rectangle {
     }
     if kind == 1 : CompactCard {
         glyph: "pulse";
-        title: "Cooler Boost";
-        subtitle: AppState.cooler-boost-known ? (AppState.cooler-boost ? "已开启" : "关闭") : "—";
+        title: "强冷散热";
+        subtitle: AppState.cooler-boost-known ? (AppState.cooler-boost ? "风扇全速运行中" : "风扇全速运转") : "—";
         accent-border: AppState.cooler-boost ? Theme.warn : transparent;
-        Switch {
+        FluentToggle {
             checked: AppState.cooler-boost;
             enabled: AppState.cap-cooler && AppState.cooler-boost-known && AppState.interactive;
             toggled => { AppState.command(21, AppState.cooler-boost ? 0 : 1, 0); }
@@ -40,7 +75,7 @@ component DashboardControl inherits Rectangle {
         glyph: "battery";
         title: "充电上限";
         ComboBox {
-            width: 128px;
+            width: 124px;
             model: AppState.charge-labels;
             current-index: AppState.charge-choice;
             enabled: AppState.cap-charge && AppState.interactive;
@@ -51,36 +86,23 @@ component DashboardControl inherits Rectangle {
         glyph: "display";
         title: "刷新率";
         ComboBox {
-            width: 128px;
+            width: 124px;
             model: AppState.refresh-labels;
             current-index: AppState.refresh-choice;
             enabled: AppState.cap-refresh && AppState.interactive;
             selected(_) => { AppState.command(23, self.current-index, 0); }
         }
     }
-    if kind == 4 : CompactCard {
-        glyph: "lighting";
-        title: "屏幕亮度";
-        subtitle: Fmt.pct(AppState.brightness);
-        Slider {
-            width: 128px;
-            value: max(0, AppState.brightness);
-            minimum: 0;
-            maximum: 100;
-            step: 1;
-            enabled: AppState.cap-brightness && AppState.brightness >= 0 && AppState.interactive;
-            released(v) => { if Math.round(v) != AppState.brightness { AppState.command(24, Math.round(v), 0); } }
-        }
-    }
+    if kind == 4 : BrightnessControlCard { }
     if kind == 5 : CompactCard {
         glyph: "keyboard";
         title: "键盘灯效";
-        subtitle: AppState.keyboard-conflict ? "官软占用" : "24 区 RGB";
+        subtitle: AppState.keyboard-conflict ? "被 MSI 软件占用" : "24 区背光";
         accent-border: AppState.keyboard-conflict ? Theme.danger : transparent;
         FluentButton {
             text: "编辑";
             variant: 0;
-            width: 92px;
+            width: 88px;
             clicked => { AppState.command(10, 4, 0); }
         }
     }
@@ -115,10 +137,13 @@ component TelemetryCell inherits Rectangle {
 }
 
 export component DashboardPage inherits Rectangle {
-    property <int> columns: root.width >= 960px ? 3 : 2;
+    in property <length> viewport-h: 560px;
+    property <int> columns: root.width >= 820px ? 3 : 2;
     property <int> rows: 6 / columns;
+    property <length> chart-h: clamp(root.viewport-h - (root.columns == 3 ? 268px : 344px), 168px, 290px);
 
     VerticalLayout {
+        alignment: start;
         spacing: Theme.gap-group;
 
         SettingsGroup {
@@ -135,7 +160,6 @@ export component DashboardPage inherits Rectangle {
         }
 
         VerticalLayout {
-            vertical-stretch: 1;
             spacing: Theme.gap-group-head;
 
             HorizontalLayout {
@@ -162,7 +186,7 @@ export component DashboardPage inherits Rectangle {
                     Text { text: "GPU " + Fmt.celsius(AppState.gpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
                 }
                 Text {
-                    text: "" + AppState.series-len + " 样本";
+                    text: "" + AppState.series-len + " 条记录";
                     font-size: Theme.font-caption;
                     color: Theme.text-3;
                     vertical-alignment: center;
@@ -170,12 +194,10 @@ export component DashboardPage inherits Rectangle {
             }
 
             VerticalLayout {
-                vertical-stretch: 1;
                 spacing: Theme.gap-card;
 
                 Rectangle {
-                    vertical-stretch: 1;
-                    min-height: 156px;
+                    height: root.chart-h;
                     background: Theme.card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
@@ -206,7 +228,7 @@ export component DashboardPage inherits Rectangle {
                         VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
                         TelemetryCell { label: "GPU 功耗"; value: Fmt.watts(AppState.gpu-power-mw); }
                         VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
-                        TelemetryCell { label: "人工占用"; value: "" + AppState.override-count + " 项"; }
+                        TelemetryCell { label: "手动锁定"; value: "" + AppState.override-count + " 项"; }
                     }
                 }
             }

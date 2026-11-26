@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 msilt-core.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 # Slint with the *measured* winner backend: software raster + winit, no GPU
 # context, no dGPU wake, 12.6 MiB private / ~118 ms first frame on the
 # MS-17S3 test machine. The Fluent 2 widget style comes from `std-widgets`.

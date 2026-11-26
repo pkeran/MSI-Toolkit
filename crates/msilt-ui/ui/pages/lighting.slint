@@ -1,5 +1,5 @@
-// Page 4: Keyboard Lighting — Wootility-inspired physical MSI Vector 17 HX
-// keyboard chassis on top + interactive 2D HSV Color Palette & Brightness deck below.
+// Page 4: Keyboard Lighting — proportional physical MSI Vector 17 HX keyboard
+// chassis on top + responsive HSV Color Palette & Brightness deck below.
 
 import { Theme } from "../theme.slint";
 import { AppState } from "../state.slint";
@@ -25,7 +25,6 @@ component PresetChipButton inherits Rectangle {
               : Theme.btn-bg;
     border-width: 1px;
     border-color: Theme.btn-border;
-    animate background { duration: Theme.dur-hover; easing: ease-out; }
     clip: true;
 
     if root.enabled && !ta.pressed : Rectangle {
@@ -75,23 +74,80 @@ component PresetChipButton inherits Rectangle {
     }
 }
 
+component LightingControlsDeck inherits Rectangle {
+    in property <[string]> brightness-labels: ["关", "低", "中", "高"];
+    in property <[int]> brightness-values: [0, 1, 2, 3];
+    in property <bool> can-edit: true;
+
+    horizontal-stretch: 2;
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        SectionLabel { text: "亮度"; glyph: "lighting"; hint: "" + AppState.zone-brightness + " / 3"; }
+        FluentSegmentBar {
+            labels: root.brightness-labels;
+            values: root.brightness-values;
+            current: AppState.zone-brightness;
+            enabled: root.can-edit;
+            picked(v) => { AppState.command(44, v, 0); }
+        }
+
+        SectionLabel { text: "快速预设"; glyph: "bolt"; }
+        HorizontalLayout {
+            spacing: 6px;
+            PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 0, 0); } }
+            PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: root.can-edit; clicked => { AppState.command(42, 1, 0); } }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: root.can-edit; clicked => { AppState.command(42, 2, 0); } }
+            PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 3, 0); } }
+        }
+
+        Rule { }
+
+        KeyValue {
+            k: AppState.keyboard-device == "—" ? "键盘状态" : AppState.keyboard-device;
+            v: AppState.keyboard-conflict ? "被 MSI 软件占用"
+             : !AppState.cap-keyboard ? (AppState.connection == 1 ? "未检测到设备" : "等待连接")
+             : (AppState.keyboard-submit == "" ? "就绪" : AppState.keyboard-submit);
+            mono: false;
+            level: AppState.keyboard-conflict ? 2 : (AppState.cap-keyboard ? 3 : 0);
+            row-height: 22px;
+        }
+
+        FluentButton {
+            text: "应用到键盘";
+            glyph: "check";
+            variant: 1;
+            height: 34px;
+            enabled: AppState.cap-keyboard && !AppState.keyboard-conflict && AppState.interactive;
+            clicked => { AppState.command(41, 0, 0); }
+        }
+    }
+}
+
 export component LightingPage inherits Rectangle {
     background: transparent;
     horizontal-stretch: 1;
-    vertical-stretch: 1;
 
-    property <[string]> brightness-labels: ["关", "低", "中", "高"];
-    property <[int]> brightness-values: [0, 1, 2, 3];
+    property <bool> wide-deck: root.width >= 680px;
+    property <bool> can-edit: !AppState.keyboard-conflict && (AppState.cap-keyboard || AppState.demo);
 
     VerticalLayout {
         spacing: 14px;
         alignment: start;
 
-        // ── Hero: Physical MSI Vector 17 HX full-size keyboard ──────────────
         ZoneMatrix {
             zones: AppState.zones;
             selected: AppState.zone-selected;
-            enabled: AppState.cap-keyboard && !AppState.keyboard-conflict;
+            enabled: root.can-edit;
             conflict: AppState.keyboard-conflict;
             toggle(i, additive) => { AppState.zone-edit(i, additive); }
             select-all() => { AppState.command(43, 1, 0); }
@@ -100,11 +156,15 @@ export component LightingPage inherits Rectangle {
 
         if AppState.keyboard-conflict : InfoBar {
             level: 2;
-            text: "检测到 LEDKeeper2 / Mystic_Light_Service 占用，请先在“系统与工具”停用官软灯效服务。";
+            text: "检测到 MSI 灯效服务正在占用键盘，请前往「系统与工具」停止后再设置灯光。";
         }
 
-        // ── Bottom 2-column control deck (HSV Color Pad + Brightness/Apply) ─
-        HorizontalLayout {
+        if AppState.connection == 1 && !AppState.cap-keyboard && !AppState.keyboard-conflict : InfoBar {
+            level: 1;
+            text: "未检测到兼容的 24 区背光键盘。若刚更新程序，请重启后台服务后再试。";
+        }
+
+        if root.wide-deck : HorizontalLayout {
             spacing: 12px;
 
             ColorPicker {
@@ -115,66 +175,30 @@ export component LightingPage inherits Rectangle {
                 pure-hue: AppState.zone-pure-hue;
                 active-color: AppState.zone-active-color;
                 active-hex: AppState.zone-color-hex;
-                enabled: AppState.cap-keyboard && !AppState.keyboard-conflict;
+                enabled: root.can-edit;
                 picked-hsv(h, s, v) => { AppState.zone-hsv(h, s, v); }
                 picked-hex(hex) => { AppState.command-text(45, hex); }
             }
 
-            Rectangle {
-                horizontal-stretch: 2;
-                background: Theme.card;
-                border-radius: Theme.radius-card;
-                border-width: 1px;
-                border-color: Theme.card-stroke;
+            LightingControlsDeck { can-edit: root.can-edit; }
+        }
 
-                VerticalLayout {
-                    padding: 14px;
-                    spacing: 10px;
+        if !root.wide-deck : VerticalLayout {
+            spacing: 12px;
 
-                    SectionLabel { text: "亮度"; glyph: "lighting"; hint: "" + AppState.zone-brightness + " / 3"; }
-                    FluentSegmentBar {
-                        labels: root.brightness-labels;
-                        values: root.brightness-values;
-                        current: AppState.zone-brightness;
-                        enabled: AppState.cap-keyboard;
-                        picked(v) => { AppState.command(44, v, 0); }
-                    }
-
-                    SectionLabel { text: "快速预设"; glyph: "bolt"; }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 0, 0); } }
-                        PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 1, 0); } }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 2, 0); } }
-                        PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: AppState.cap-keyboard; clicked => { AppState.command(42, 3, 0); } }
-                    }
-
-                    Rule { }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        KeyValue {
-                            horizontal-stretch: 1;
-                            k: AppState.keyboard-device;
-                            v: AppState.keyboard-submit == "" ? "就绪" : AppState.keyboard-submit;
-                            mono: false;
-                            row-height: 22px;
-                        }
-                    }
-
-                    FluentButton {
-                        text: "应用到键盘";
-                        glyph: "check";
-                        variant: 1;
-                        height: 34px;
-                        enabled: AppState.cap-keyboard && !AppState.keyboard-conflict && AppState.interactive;
-                        clicked => { AppState.command(41, 0, 0); }
-                    }
-                }
+            ColorPicker {
+                hue: AppState.zone-hue;
+                sat: AppState.zone-sat;
+                val: AppState.zone-val;
+                pure-hue: AppState.zone-pure-hue;
+                active-color: AppState.zone-active-color;
+                active-hex: AppState.zone-color-hex;
+                enabled: root.can-edit;
+                picked-hsv(h, s, v) => { AppState.zone-hsv(h, s, v); }
+                picked-hex(hex) => { AppState.command-text(45, hex); }
             }
+
+            LightingControlsDeck { can-edit: root.can-edit; }
         }
     }
 }

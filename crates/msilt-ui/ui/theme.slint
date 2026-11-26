@@ -150,14 +150,21 @@ export global Theme {
     out property <length> radius-lg: 10px;
     out property <length> pill-h: 24px;
 
-    // ── Motion (Magpie / WinUI timings; 0ms under reduced-motion) ───────────
-    out property <duration> dur-hover: reduced-motion ? 0ms : 83ms;
-    out property <duration> dur-nav: reduced-motion ? 0ms : 150ms;
-    out property <duration> dur-collapse: reduced-motion ? 0ms : 167ms;
-    out property <duration> dur-expand: reduced-motion ? 0ms : 333ms;
+    // ── Motion (crisp Fluent 2 timings tuned for software rendering; 0ms under reduced-motion) ─
+    out property <duration> dur-hover: reduced-motion ? 0ms : 65ms;
+    out property <duration> dur-segment: reduced-motion ? 0ms : 150ms;
+    out property <duration> dur-toggle: reduced-motion ? 0ms : 130ms;
+    out property <duration> dur-nav: reduced-motion ? 0ms : 140ms;
+    out property <duration> dur-toast-in: reduced-motion ? 0ms : 180ms;
+    out property <duration> dur-toast-out: reduced-motion ? 0ms : 220ms;
+    out property <duration> dur-collapse: reduced-motion ? 0ms : 150ms;
+    out property <duration> dur-expand: reduced-motion ? 0ms : 200ms;
     out property <duration> dur-fast: dur-hover;
     out property <duration> dur: dur-nav;
     out property <duration> dur-slow: dur-collapse;
+
+    out property <color> toast-bg: dark ? #2F2F36 : #FFFFFF;
+    out property <color> toast-border: dark ? rgba(255, 255, 255, 0.14) : #D5D9E2;
 
     // ── Helpers ─────────────────────────────────────────────────────────────
     public pure function severity-color(level: int) -> color {

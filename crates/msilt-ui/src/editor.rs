@@ -43,11 +43,11 @@ pub enum ClampReason {
 impl ClampReason {
     pub fn text(self, index: usize, value: u8) -> String {
         match self {
-            Self::Anchor => "首点是固定锚点，保持设备给定的下限值".into(),
-            Self::Floor => format!("点 {} 不能低于 {}%（出厂安全下限）", index + 1, value),
-            Self::Ceiling => format!("点 {} 已限制到本机上限 {}%", index + 1, value),
-            Self::MonotonicLow => format!("占空比不能下降：点 {} 已限制到 {}%", index + 1, value),
-            Self::MonotonicHigh => format!("占空比不能上升：点 {} 已限制到 {}%", index + 1, value),
+            Self::Anchor => "起始低温锚点已锁定，防止风扇停转".into(),
+            Self::Floor => format!("节点 {} 转速不能低于安全下限 {}%", index + 1, value),
+            Self::Ceiling => format!("节点 {} 已达本机上限 {}%", index + 1, value),
+            Self::MonotonicLow => format!("转速需随温度递增：节点 {} 不能低于 {}%", index + 1, value),
+            Self::MonotonicHigh => format!("转速需随温度递增：节点 {} 不能高于 {}%", index + 1, value),
         }
     }
 }
@@ -152,7 +152,7 @@ impl CurveEditor {
     pub fn set_duty(&mut self, index: usize, duty: i32) -> bool {
         self.hint = None;
         if !self.editable || index >= FAN_POINT_COUNT {
-            self.hint = Some("当前通道只读：映射尚未通过写入验收".into());
+            self.hint = Some("当前设备暂不支持自定义风扇曲线".into());
             return false;
         }
         if index == 0 && self.fixed_anchor {
@@ -206,7 +206,7 @@ impl CurveEditor {
     /// already applied. The result is monotonic by construction.
     pub fn preset(&mut self, kind: u8) {
         if !self.editable {
-            self.hint = Some("当前通道只读".into());
+            self.hint = Some("当前风扇曲线暂不支持修改".into());
             return;
         }
         self.hint = None;

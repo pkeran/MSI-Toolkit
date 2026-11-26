@@ -1,24 +1,26 @@
-// Page 6: Monitor & OSD — FluentSegmentBar sampling window + trend/table tabs
-// + Magpie OSD SettingsGroup with live "测试 OSD" button.
+// Page 6: Monitor & Screen Alerts — clamped trend/table height + clean Chinese copy.
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
-import { Switch, SpinBox, TabWidget, StandardTableView } from "std-widgets.slint";
+import { SpinBox, TabWidget, StandardTableView } from "std-widgets.slint";
 import { Sparkline } from "../components/sparkline.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { SettingsCard } from "../components/settings_card.slint";
 import { FluentButton } from "../components/fluent_button.slint";
 import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { FluentToggle } from "../components/fluent_toggle.slint";
 import { KeyValue, Chip } from "../components/primitives.slint";
 import { Icon } from "../icons.slint";
 
 export component MonitorPage inherits Rectangle {
+    in property <length> viewport-h: 560px;
+    property <length> tab-h: clamp(root.viewport-h - 244px, 236px, 380px);
+
     VerticalLayout {
+        alignment: start;
         spacing: 18px;
 
-        // ── Telemetry toolbar + trend/table tabs ────────────────────────────
         VerticalLayout {
-            vertical-stretch: 1;
             spacing: Theme.gap-card;
 
             Rectangle {
@@ -39,7 +41,7 @@ export component MonitorPage inherits Rectangle {
                     }
 
                     Text {
-                        text: AppState.monitor-paused ? "采样已暂停" : "按需遥测 · 1 Hz";
+                        text: AppState.monitor-paused ? "监控已暂停" : "实时监控";
                         font-size: Theme.font-card-title;
                         color: Theme.text;
                         vertical-alignment: center;
@@ -73,7 +75,7 @@ export component MonitorPage inherits Rectangle {
                             text: AppState.monitor-paused ? "继续" : "暂停";
                             variant: 0;
                             compact: true;
-                            width: 76px;
+                            width: 72px;
                             clicked => { AppState.command(70, 0, 0); }
                         }
                     }
@@ -81,8 +83,7 @@ export component MonitorPage inherits Rectangle {
             }
 
             TabWidget {
-                vertical-stretch: 1;
-                min-height: 230px;
+                height: root.tab-h;
 
                 Tab {
                     title: "温度趋势";
@@ -113,7 +114,7 @@ export component MonitorPage inherits Rectangle {
                                 }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                                 Text {
-                                    text: "" + AppState.series-len + " 个样本 · 缺值断线";
+                                    text: "" + AppState.series-len + " 条记录";
                                     font-size: Theme.font-caption;
                                     color: Theme.text-3;
                                     vertical-alignment: center;
@@ -140,10 +141,10 @@ export component MonitorPage inherits Rectangle {
                 }
 
                 Tab {
-                    title: "最近样本";
+                    title: "最近记录";
                     StandardTableView {
                         columns: [
-                            { title: "UTC 时间" },
+                            { title: "时间 (UTC)" },
                             { title: "CPU °C" },
                             { title: "GPU °C" },
                             { title: "CPU RPM" },
@@ -156,25 +157,24 @@ export component MonitorPage inherits Rectangle {
             }
         }
 
-        // ── OSD settings (Magpie SettingsGroup, zero verbose copy) ──────────
         SettingsGroup {
-            title: "桌面通知 (OSD)";
+            title: "屏幕悬浮提示";
 
             SettingsCard {
                 glyph: "display";
-                title: "启用 OSD 悬浮通知";
+                title: "切换模式时显示悬浮提示";
                 card-height: 56px;
 
                 FluentButton {
-                    text: "测试 OSD";
+                    text: "预览提示";
                     glyph: "eye";
                     variant: 2;
                     compact: true;
-                    width: 96px;
+                    width: 92px;
                     enabled: AppState.interactive;
                     clicked => { AppState.command(95, 0, 0); }
                 }
-                Switch {
+                FluentToggle {
                     checked: AppState.osd-enabled;
                     enabled: AppState.config-known && AppState.interactive;
                     toggled => { AppState.command(91, AppState.osd-enabled ? 0 : 1, 0); }
@@ -183,7 +183,7 @@ export component MonitorPage inherits Rectangle {
 
             SettingsCard {
                 glyph: "clock";
-                title: "显示时长";
+                title: "停留时长";
                 card-height: 56px;
 
                 SpinBox {
@@ -196,9 +196,8 @@ export component MonitorPage inherits Rectangle {
                     edited(v) => { AppState.command(92, v, 0); }
                 }
                 Text {
-                    text: "ms";
+                    text: "毫秒";
                     font-size: Theme.font-caption;
-                    font-family: Theme.font-mono;
                     color: Theme.text-2;
                     vertical-alignment: center;
                 }

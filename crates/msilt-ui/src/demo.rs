@@ -19,7 +19,6 @@ pub const MAX_DUTY: u8 = 150;
 pub const BOARD_ID: &str = "MS-17S3";
 pub const EC_FIRMWARE: &str = "17S3EMS1.107";
 pub const PANEL: &str = "AUO84A6 · 2560×1600 · 60/240 Hz";
-pub const KEYBOARD_HID: &str = "1462:1603";
 
 fn curve(temps: [u8; 6], duties: [u8; 6]) -> FanCurve {
     FanCurve {

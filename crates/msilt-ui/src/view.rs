@@ -14,7 +14,7 @@ use msilt_core::{
     GpuMuxMode, OemInventory, OemItemKind, OemPackageId, OemScope, PerformanceMode, PowerSource,
     StartupMode, StartupStatus, SystemSnapshot, TelemetrySample,
 };
-use slint::{Color, ModelRc, SharedString, VecModel};
+use slint::{Color, Model, ModelRc, SharedString, VecModel};
 
 use crate::editor::{CurveEditor, ZoneEditor};
 use crate::{AppState, AutoRuleRow, CurvePoint, OemItemRow, OemPkgRow, SampleRow};
@@ -189,6 +189,24 @@ fn ec_index(status: EcWriteStatus) -> i32 {
     }
 }
 
+fn sync_vec_model<T: Clone + PartialEq + 'static>(
+    current: ModelRc<T>,
+    next: Vec<T>,
+    assign: impl FnOnce(ModelRc<T>),
+) {
+    if let Some(existing) = current.as_any().downcast_ref::<VecModel<T>>() {
+        if existing.row_count() == next.len() {
+            for (index, item) in next.into_iter().enumerate() {
+                if existing.row_data(index).as_ref() != Some(&item) {
+                    existing.set_row_data(index, item);
+                }
+            }
+            return;
+        }
+    }
+    assign(ModelRc::new(VecModel::from(next)));
+}
+
 /// Projection of the demo/real snapshot into the shell globals.
 pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: bool) {
     let hardware = &snapshot.hardware;
@@ -211,10 +229,16 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
     state.set_board_id(hardware.identity.board_id.clone().unwrap_or_else(|| "—".into()).into());
     state.set_ec_firmware(hardware.identity.ec_firmware.clone().unwrap_or_else(|| "—".into()).into());
     state.set_performance_mode(hardware.performance_mode.map_or(-1, mode_index));
-    state.set_supported_modes(ModelRc::new(VecModel::from(
+    sync_vec_model(
+        state.get_supported_modes(),
         hardware.supported_performance_modes.iter().copied().map(mode_index).collect::<Vec<i32>>(),
-    )));
-    state.set_mode_labels(ModelRc::new(VecModel::from(hardware.supported_performance_modes.iter().map(|mode| SharedString::from(mode_name(*mode))).collect::<Vec<_>>())));
+        |m| state.set_supported_modes(m),
+    );
+    sync_vec_model(
+        state.get_mode_labels(),
+        hardware.supported_performance_modes.iter().map(|mode| SharedString::from(mode_name(*mode))).collect::<Vec<_>>(),
+        |m| state.set_mode_labels(m),
+    );
     state.set_mode_choice(choice_index(&hardware.supported_performance_modes, hardware.performance_mode.as_ref()));
     state.set_cooler_boost_known(hardware.cooler_boost.is_some());
     state.set_cooler_boost(hardware.cooler_boost.unwrap_or(false));
@@ -225,16 +249,28 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
     });
     state.set_battery_percent(hardware.battery_percent.map_or(-1, i32::from));
     state.set_charge_limit(hardware.charge_limit_percent.map_or(-1, i32::from));
-    state.set_charge_limits(ModelRc::new(VecModel::from(
+    sync_vec_model(
+        state.get_charge_limits(),
         hardware.supported_charge_limits.iter().map(|v| i32::from(*v)).collect::<Vec<i32>>(),
-    )));
-    state.set_charge_labels(ModelRc::new(VecModel::from(hardware.supported_charge_limits.iter().map(|v| SharedString::from(format!("{v}%"))).collect::<Vec<_>>())));
+        |m| state.set_charge_limits(m),
+    );
+    sync_vec_model(
+        state.get_charge_labels(),
+        hardware.supported_charge_limits.iter().map(|v| SharedString::from(format!("{v}%"))).collect::<Vec<_>>(),
+        |m| state.set_charge_labels(m),
+    );
     state.set_charge_choice(choice_index(&hardware.supported_charge_limits, hardware.charge_limit_percent.as_ref()));
     state.set_refresh_hz(hardware.display_refresh_hz.map_or(-1, i32::from));
-    state.set_refresh_rates(ModelRc::new(VecModel::from(
+    sync_vec_model(
+        state.get_refresh_rates(),
         hardware.supported_refresh_rates.iter().map(|v| i32::from(*v)).collect::<Vec<i32>>(),
-    )));
-    state.set_refresh_labels(ModelRc::new(VecModel::from(hardware.supported_refresh_rates.iter().map(|v| SharedString::from(format!("{v} Hz"))).collect::<Vec<_>>())));
+        |m| state.set_refresh_rates(m),
+    );
+    sync_vec_model(
+        state.get_refresh_labels(),
+        hardware.supported_refresh_rates.iter().map(|v| SharedString::from(format!("{v} Hz"))).collect::<Vec<_>>(),
+        |m| state.set_refresh_labels(m),
+    );
     state.set_refresh_choice(choice_index(&hardware.supported_refresh_rates, hardware.display_refresh_hz.as_ref()));
     state.set_brightness(hardware.display_brightness_percent.map_or(-1, i32::from));
     state.set_color_profile(hardware.color_profile_id.clone().unwrap_or_else(|| "—".into()).into());
@@ -245,13 +281,15 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
             .and_then(|id| hardware.supported_color_profiles.iter().position(|p| p == id))
             .map_or(-1, |index| index as i32),
     );
-    state.set_color_profiles(ModelRc::new(VecModel::from(
+    sync_vec_model(
+        state.get_color_profiles(),
         hardware
             .supported_color_profiles
             .iter()
             .map(|id| SharedString::from(id.as_str()))
             .collect::<Vec<SharedString>>(),
-    )));
+        |m| state.set_color_profiles(m),
+    );
     state.set_mux_current(hardware.gpu_mux.map_or(-1, |mux| mux_index(mux.current)));
     state.set_mux_pending(hardware.gpu_mux.and_then(|mux| mux.pending).map_or(-1, mux_index));
     state.set_override_count(snapshot.manual_overrides.len() as i32);
@@ -259,14 +297,14 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
         hardware
             .panel_name
             .as_deref()
-            .unwrap_or(if demo { crate::demo::PANEL } else { "宿主未提供面板型号" })
+            .unwrap_or(if demo { crate::demo::PANEL } else { "内置显示器" })
             .into(),
     );
     state.set_keyboard_device(
         if demo {
-            crate::demo::KEYBOARD_HID
+            "24 区背光键盘"
         } else if hardware.keyboard_zones.is_some() || snapshot.capabilities.contains(CapabilityFlags::KEYBOARD_LIGHTING) {
-            "HID 1462:1603 · 24 区 RGB"
+            "24 区背光键盘"
         } else {
             "—"
         }
@@ -408,10 +446,10 @@ pub fn apply_automation_rules(state: &AppState<'_>, rules: &[AutomationRuleView]
     }
 }
 
-/// Projects both curve editors into the canvas models.
+/// Projects both curve editors into the canvas models (mutating in-place to avoid layout churn).
 pub fn apply_curves(state: &AppState<'_>, curves: &[CurveEditor; 2]) {
-    state.set_cpu_curve(ModelRc::new(VecModel::from(curve_model(&curves[0]))));
-    state.set_gpu_curve(ModelRc::new(VecModel::from(curve_model(&curves[1]))));
+    sync_vec_model(state.get_cpu_curve(), curve_model(&curves[0]), |m| state.set_cpu_curve(m));
+    sync_vec_model(state.get_gpu_curve(), curve_model(&curves[1]), |m| state.set_gpu_curve(m));
     let max_duty = curves[0].max_duty_percent().max(curves[1].max_duty_percent());
     state.set_curve_max_duty(i32::from(max_duty));
     state.set_cpu_curve_max(i32::from(curves[0].max_duty_percent()));
@@ -443,7 +481,8 @@ pub fn apply_curve_flags(state: &AppState<'_>, curves: &[CurveEditor; 2], channe
     state.set_curve_error(editor.hint().unwrap_or("").into());
 }
 
-/// Projects the zone editor into the 24-cell physical keyboard + HSV color pad.
+/// Projects the zone editor into the 24-cell physical keyboard + HSV color pad
+/// using in-place `VecModel` diffing so dragging the color pad stays 60fps.
 pub fn apply_zones(state: &AppState<'_>, zones: &ZoneEditor, dark: bool) {
     let _ = dark;
     let colors = zones
@@ -454,8 +493,8 @@ pub fn apply_zones(state: &AppState<'_>, zones: &ZoneEditor, dark: bool) {
     let active = zones.active_color();
     let (h, s, v) = zones.hsv();
     let pure = zones.pure_hue_rgb();
-    state.set_zones(ModelRc::new(VecModel::from(colors)));
-    state.set_zone_selected(ModelRc::new(VecModel::from(zones.selected().to_vec())));
+    sync_vec_model(state.get_zones(), colors, |m| state.set_zones(m));
+    sync_vec_model(state.get_zone_selected(), zones.selected().to_vec(), |m| state.set_zone_selected(m));
     state.set_zone_brightness(i32::from(zones.brightness()));
     state.set_zone_color_hex(format!("#{:02X}{:02X}{:02X}", active.r, active.g, active.b).into());
     state.set_zone_hue(h);
@@ -465,12 +504,16 @@ pub fn apply_zones(state: &AppState<'_>, zones: &ZoneEditor, dark: bool) {
     state.set_zone_active_color(Color::from_rgb_u8(active.r, active.g, active.b));
 }
 
-pub fn apply_history(state: &AppState<'_>, history: &History) {
+pub fn apply_history_paths(state: &AppState<'_>, history: &History) {
     let count = (state.get_monitor_window().max(1) as usize * 60).min(HISTORY_CAP);
     let tail = |queue: &VecDeque<Option<i16>>| queue.iter().skip(queue.len().saturating_sub(count)).copied().collect::<VecDeque<_>>();
     state.set_cpu_path(series_path(&tail(&history.cpu), TREND_MAX_C).into());
     state.set_gpu_path(series_path(&tail(&history.gpu), TREND_MAX_C).into());
     state.set_series_len(history.cpu.len() as i32);
+}
+
+pub fn apply_history(state: &AppState<'_>, history: &History) {
+    apply_history_paths(state, history);
     state.set_samples(ModelRc::new(VecModel::from(history.samples.iter().cloned().collect::<Vec<_>>())));
     state.set_sample_table(ModelRc::new(VecModel::from(history.samples.iter().map(|row| {
         ModelRc::new(VecModel::from([&row.time, &row.cpu, &row.gpu, &row.cpu_rpm, &row.gpu_rpm, &row.gpu_power].map(|text| slint::StandardListViewItem::from(text.clone())).to_vec()))
@@ -513,48 +556,45 @@ pub fn notice(snapshot: &SystemSnapshot, connected: bool, demo: bool, installed:
     if !connected {
         return Some(Notice {
             level: 2,
-            title: "后台未连接".into(),
+            title: "后台服务未连接".into(),
             text: if installed {
-                "暂时无法读取硬件状态。".into()
+                "暂时无法调节硬件，点击右侧按钮启动服务。".into()
             } else {
                 "请先启动后台服务。".into()
             },
-            action: if installed { "启动服务".into() } else { "立即重连".into() },
+            action: if installed { "启动服务".into() } else { "重新连接".into() },
         });
     }
     match snapshot.ec_write_status {
         EcWriteStatus::Enabled => None,
         EcWriteStatus::RecoveryRequired => Some(Notice {
             level: 2,
-            title: "需要恢复".into(),
-            text: "上一次写入结果不确定，已锁定写入通道。请按恢复指引只读复核后再操作。".into(),
+            title: "硬件控制已暂停".into(),
+            text: "上次调节未收到确认，为保护硬件已暂停控制，请重启服务或重启电脑后重试。".into(),
             action: String::new(),
         }),
         EcWriteStatus::ConflictDetected => Some(Notice {
             level: 1,
-            title: "MSI 软件正在使用硬件".into(),
-            text: "部分控制已暂停，监控仍可用。".into(),
-            action: "管理软件".into(),
+            title: "MSI 官方软件正在占用硬件".into(),
+            text: "部分调节已暂停，温度监控仍可正常查看。".into(),
+            action: "去管理".into(),
         }),
         EcWriteStatus::ReadOnlyFirmware => Some(Notice {
             level: 1,
-            title: "EC 写入已锁定".into(),
-            text: format!(
-                "当前固件 {} 的映射尚未通过写入验收。曲线可预览，暂不能应用。",
-                snapshot.hardware.identity.ec_firmware.clone().unwrap_or_else(|| "未知".into())
-            ),
+            title: "当前为仅查看模式".into(),
+            text: "当前机型暂不支持硬件调节，仍可查看温度与风扇状态。".into(),
             action: String::new(),
         }),
         EcWriteStatus::UnverifiedMapping => Some(Notice {
             level: 1,
-            title: "映射待验证".into(),
-            text: "风扇曲线与灯效可本地预览，写入通道保持关闭，直到映射通过验收。".into(),
+            title: "当前为仅查看模式".into(),
+            text: "当前机型暂未开放硬件调节，仅提供状态查看。".into(),
             action: String::new(),
         }),
         EcWriteStatus::Unavailable => Some(Notice {
             level: 1,
-            title: "EC 通道不可用".into(),
-            text: "未取得 EC 写入能力；只读监控与页面浏览仍然可用。".into(),
+            title: "硬件控制暂不可用".into(),
+            text: "暂时无法访问硬件控制接口，状态监控仍可正常查看。".into(),
             action: String::new(),
         }),
     }

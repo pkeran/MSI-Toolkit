@@ -77,6 +77,10 @@ component GpuModeCard inherits Rectangle {
 }
 
 export component DisplayPage inherits Rectangle {
+    property <bool> dragging-brightness: false;
+    property <int> draft-brightness: 0;
+    property <int> shown-brightness: root.dragging-brightness ? root.draft-brightness : AppState.brightness;
+
     VerticalLayout {
         alignment: start;
         spacing: Theme.gap-group;
@@ -121,7 +125,7 @@ export component DisplayPage inherits Rectangle {
                                 y: 0px;
                                 width: parent.width;
                                 height: parent.height;
-                                background: #0B0C0E.with-alpha(clamp(0.75 - (max(0, AppState.brightness) / 100.0) * 0.75, 0.0, 0.75));
+                                background: #0B0C0E.with-alpha(clamp(0.75 - (max(0, root.shown-brightness) / 100.0) * 0.75, 0.0, 0.75));
                             }
 
                             Text {
@@ -164,7 +168,7 @@ export component DisplayPage inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 Chip {
-                                    text: "亮度 " + Fmt.pct(AppState.brightness);
+                                    text: "亮度 " + Fmt.pct(root.shown-brightness);
                                     level: 0;
                                 }
                             }
@@ -222,7 +226,7 @@ export component DisplayPage inherits Rectangle {
                     width: 228px;
                     spacing: 8px;
                     Text {
-                        text: Fmt.pct(AppState.brightness);
+                        text: Fmt.pct(root.shown-brightness);
                         width: 40px;
                         font-size: Theme.font-body;
                         font-family: Theme.font-mono;
@@ -237,7 +241,16 @@ export component DisplayPage inherits Rectangle {
                         maximum: 100;
                         step: 1;
                         enabled: AppState.cap-brightness && AppState.brightness >= 0 && AppState.interactive;
-                        released(v) => { if Math.round(v) != AppState.brightness { AppState.command(24, Math.round(v), 0); } }
+                        changed(v) => {
+                            root.dragging-brightness = true;
+                            root.draft-brightness = Math.round(v);
+                        }
+                        released(v) => {
+                            root.dragging-brightness = false;
+                            if Math.round(v) != AppState.brightness {
+                                AppState.command(24, Math.round(v), 0);
+                            }
+                        }
                     }
                 }
             }
@@ -257,28 +270,28 @@ export component DisplayPage inherits Rectangle {
             }
         }
 
-        // ── Group 2: G-Helper / Legion Toolkit Clean GPU Working Mode ───────
+        // ── Group 2: Clean GPU Working Mode ───────────────────────────────
         SettingsGroup {
-            title: "显卡输出模式 (MUX)";
-            hint: "只读检测";
+            title: "显卡输出模式";
+            hint: "当前状态";
 
             HorizontalLayout {
                 spacing: 8px;
                 GpuModeCard {
                     title: "混合模式";
-                    spec: "MSHybrid · 按需调度";
+                    spec: "核显与独显自动切换";
                     active: AppState.mux-current == 0;
                     pending: AppState.mux-pending == 0;
                 }
                 GpuModeCard {
                     title: "独显直连";
-                    spec: "dGPU 直连内屏";
+                    spec: "独立显卡直连屏幕";
                     active: AppState.mux-current == 1;
                     pending: AppState.mux-pending == 1;
                 }
                 GpuModeCard {
-                    title: "集显模式";
-                    spec: "仅 iGPU 低功耗";
+                    title: "纯核显模式";
+                    spec: "仅用核显，续航更长";
                     active: AppState.mux-current == 2;
                     pending: AppState.mux-pending == 2;
                 }

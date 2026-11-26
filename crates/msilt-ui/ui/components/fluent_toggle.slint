@@ -1,0 +1,52 @@
+// Silky Win11 Fluent 2 ToggleSwitch tuned for software rendering.
+// Animates only a small 40x20 pill thumb with cubic-bezier glide + hover swell.
+
+import { Theme } from "../theme.slint";
+
+export component FluentToggle inherits Rectangle {
+    in property <bool> checked: false;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    width: 40px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: root.checked ? 0px : 1px;
+    background: !root.enabled
+        ? (root.checked ? Theme.accent.with-alpha(0.38) : Theme.btn-disabled)
+        : root.checked
+            ? (ta.pressed ? Theme.accent-pressed : (ta.has-hover ? Theme.accent-hover : Theme.accent))
+            : (ta.pressed ? Theme.subtle-pressed : (ta.has-hover ? Theme.subtle-hover : Theme.segment-track));
+    border-color: !root.enabled
+        ? Theme.card-stroke
+        : (ta.has-hover ? Theme.text-2 : Theme.stroke-strong);
+
+    accessible-role: switch;
+    accessible-checked: root.checked;
+
+    property <float> pos: root.checked ? 1.0 : 0.0;
+    animate pos { duration: Theme.dur-toggle; easing: cubic-bezier(0.16, 1.0, 0.3, 1.0); }
+
+    property <length> knob: (root.enabled && ta.pressed) ? 14px
+                          : (root.enabled && ta.has-hover) ? 13px
+                          : 12px;
+
+    Rectangle {
+        x: 4px + root.pos * (parent.width - 8px - root.knob);
+        y: (parent.height - root.knob) / 2;
+        width: root.knob;
+        height: root.knob;
+        border-radius: root.knob / 2;
+        background: !root.enabled
+            ? Theme.text-disabled
+            : root.checked
+                ? Theme.on-accent
+                : Theme.text-2;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}

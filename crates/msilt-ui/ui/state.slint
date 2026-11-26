@@ -81,17 +81,17 @@ export global Fmt {
     public pure function mux-name(m: int) -> string {
         if m == 0 { return "混合模式"; }
         if m == 1 { return "独显直连"; }
-        if m == 2 { return "集显模式"; }
+        if m == 2 { return "纯核显模式"; }
         return "—";
     }
 
     public pure function ec-name(s: int) -> string {
-        if s == 1 { return "只读固件"; }
-        if s == 2 { return "映射未验证"; }
-        if s == 3 { return "官软冲突"; }
-        if s == 4 { return "可写入"; }
-        if s == 5 { return "需要恢复"; }
-        return "不可用";
+        if s == 1 { return "仅支持查看"; }
+        if s == 2 { return "暂未开放调节"; }
+        if s == 3 { return "被 MSI 软件占用"; }
+        if s == 4 { return "正常可用"; }
+        if s == 5 { return "已暂停保护"; }
+        return "暂不可用";
     }
 }
 
@@ -117,19 +117,25 @@ export global AppState {
     out property <bool> interactive: (connection == 1 || connection == 3) && !request-pending && !diagnostic;
     in-out property <bool> request-pending: false;
     in-out property <bool> diagnostic: false;
-    in-out property <string> connection-text: "正在连接 msilt-daemon…";
+    in-out property <string> connection-text: "正在连接服务…";
     in-out property <bool> demo: false;
     in-out property <string> revision: "0";
     in-out property <string> daemon-version: "0.1.0";
     in-out property <string> ui-version: "0.1.0";
     in-out property <int> session-seconds: 0;
 
-    // ── banner ──
+    // ── persistent alert banner (only for blocking/actionable state) ──
     in-out property <bool> banner-visible: false;
     in-out property <int> banner-level: 1;
     in-out property <string> banner-title: "";
     in-out property <string> banner-text: "";
     in-out property <string> banner-action: "";
+
+    // ── floating animated toast overlay (zero layout shift) ──
+    in-out property <bool> toast-visible: false;
+    in-out property <int> toast-level: 4;
+    in-out property <string> toast-title: "";
+    in-out property <string> toast-text: "";
 
     // ── capability gates ──
     in-out property <bool> cap-performance: false;
@@ -279,18 +285,18 @@ export global AppState {
         if page == 3 { return "电池与电源"; }
         if page == 4 { return "键盘灯效"; }
         if page == 5 { return "自动化"; }
-        if page == 6 { return "监控与 OSD"; }
+        if page == 6 { return "监控与提示"; }
         return "系统与工具";
     }
 
     public pure function page-caption() -> string {
-        if page == 0 { return "常用硬件控制与实时散热趋势"; }
-        if page == 1 { return "性能档位 · 固定温度节点曲线 · 回读验证"; }
-        if page == 2 { return "显示模式、背光亮度与 Windows 色彩配置"; }
-        if page == 3 { return "电池健康度、实时功率与充电保护策略"; }
-        if page == 4 { return "24 区颜色涂色、软件亮度与硬件提交"; }
-        if page == 5 { return "事件驱动规则、试跑诊断与人工优先权"; }
-        if page == 6 { return "按需遥测、历史采样与纯软件 OSD 通知"; }
-        return "开机自启、MSI 官方软件控制、卸载与硬件诊断";
+        if page == 0 { return "常用硬件控制与实时温度趋势"; }
+        if page == 1 { return "性能模式、强冷散热与自定义风扇曲线"; }
+        if page == 2 { return "刷新率、屏幕亮度与色彩配置"; }
+        if page == 3 { return "电池健康度、实时功率与充电保护"; }
+        if page == 4 { return "24 区自定义灯效、亮度与快速预设"; }
+        if page == 5 { return "按供电与锁屏状态自动切换硬件配置"; }
+        if page == 6 { return "实时温度风扇监控与屏幕悬浮提示"; }
+        return "开机自启、软件更新、MSI 官方软件管理与硬件信息";
     }
 }

@@ -185,10 +185,28 @@ impl HidCollection {
     }
 }
 
-fn has_lighting_report(data: &Preparsed) -> bool {
-    let mut report = [0; REPORT_BYTES];
-    (unsafe { HidP_InitializeReportForID(HidP_Feature, REPORT_ID, data.0, &mut report) })
-        == HIDP_STATUS_SUCCESS
+fn has_lighting_report(data: &Preparsed, caps: &HIDP_CAPS) -> bool {
+    let mut count = caps.NumberFeatureValueCaps;
+    if count == 0 {
+        return false;
+    }
+    let mut value_caps = vec![HIDP_VALUE_CAPS::default(); usize::from(count)];
+    let status = unsafe {
+        HidP_GetValueCaps(HidP_Feature, value_caps.as_mut_ptr(), &mut count, data.0)
+    };
+    if status != HIDP_STATUS_SUCCESS {
+        return false;
+    }
+    value_caps.truncate(usize::from(count));
+    value_caps
+        .iter()
+        .any(|cap| feature_value_cap_matches(cap.ReportID, cap.BitSize, cap.ReportCount))
+}
+
+fn feature_value_cap_matches(report_id: u8, bit_size: u16, report_count: u16) -> bool {
+    report_id == REPORT_ID
+        && bit_size == 8
+        && usize::from(report_count).saturating_add(1) == REPORT_BYTES
 }
 
 fn send_frame<E>(
@@ -294,7 +312,7 @@ fn describe(handle: &OwnedHandle, deadline: Instant) -> Result<HidCollection, Di
         output_report_bytes: caps.OutputReportByteLength,
         feature_report_bytes: caps.FeatureReportByteLength,
         supports_feature_02: caps.FeatureReportByteLength == REPORT_BYTES as u16
-            && has_lighting_report(&data),
+            && has_lighting_report(&data, &caps),
     })
 }
 
@@ -436,5 +454,14 @@ mod tests {
             Err("feature transfer failed")
         );
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn feature_02_value_cap_accepts_64_byte_report_and_rejects_mismatches() {
+        // Real MS-1603 descriptor reports ID=0x02, BitSize=8, ReportCount=63 (1 + 63 = 64 bytes).
+        assert!(feature_value_cap_matches(0x02, 8, 63));
+        assert!(!feature_value_cap_matches(0x01, 8, 63));
+        assert!(!feature_value_cap_matches(0x02, 8, 1));
+        assert!(!feature_value_cap_matches(0x02, 16, 63));
     }
 }

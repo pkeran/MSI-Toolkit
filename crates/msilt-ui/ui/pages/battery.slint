@@ -49,6 +49,11 @@ component BatteryStatCell inherits Rectangle {
 }
 
 export component BatteryPage inherits Rectangle {
+    // Animate logical percentage (0..1) so battery updates glide smoothly
+    // while window resizing tracks container width immediately with zero lag.
+    property <float> anim-pct: clamp(AppState.battery-percent / 100.0, 0.0, 1.0);
+    animate anim-pct { duration: Theme.dur-nav; easing: ease-out; }
+
     VerticalLayout {
         alignment: start;
         spacing: Theme.gap-group;
@@ -86,7 +91,7 @@ export component BatteryPage inherits Rectangle {
                             Chip {
                                 glyph: "power";
                                 text: AppState.power-source < 0 ? "未知"
-                                    : (AppState.power-source == 0 ? "交流电" : "电池供电");
+                                    : (AppState.power-source == 0 ? "已接电源" : "使用电池");
                                 level: AppState.power-source == 0 ? 3 : (AppState.power-source == 1 ? 1 : 0);
                             }
                         }
@@ -137,7 +142,7 @@ export component BatteryPage inherits Rectangle {
                                 if AppState.battery-percent > 0 : Rectangle {
                                     x: 1px;
                                     y: 1px;
-                                    width: max(6px, (parent.width - 2px) * clamp(AppState.battery-percent / 100.0, 0.0, 1.0));
+                                    width: max(6px, (parent.width - 2px) * root.anim-pct);
                                     height: parent.height - 2px;
                                     border-radius: Theme.radius-sm;
                                     background: AppState.battery-percent <= 20
@@ -145,7 +150,6 @@ export component BatteryPage inherits Rectangle {
                                         : AppState.power-source == 0
                                             ? @linear-gradient(90deg, #1E9E6E 0%, #3ECF8E 100%)
                                             : @linear-gradient(90deg, #2B87D1 0%, #58C4FF 100%);
-                                    animate width { duration: Theme.dur-nav; easing: ease-out; }
                                 }
 
                                 // Subtle internal hairline ticks at 20 / 40 / 60 / 80%

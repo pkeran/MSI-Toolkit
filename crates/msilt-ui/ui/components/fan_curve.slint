@@ -65,6 +65,7 @@ export component FanCurveEditor inherits Rectangle {
     in property <bool> pending: false;
     in property <bool> dirty: false;
     in property <string> error: "";
+    in property <length> canvas-height: 196px;
 
     callback edit(index: int, duty: int);
     callback apply();
@@ -266,8 +267,7 @@ export component FanCurveEditor inherits Rectangle {
 
         // ── interactive curve canvas ────────────────────────────────────────
         canvas := Rectangle {
-            vertical-stretch: 1;
-            min-height: 136px;
+            height: root.canvas-height;
             background: Theme.inset;
             border-radius: Theme.radius;
             border-width: 1px;
@@ -471,7 +471,7 @@ export component FanCurveEditor inherits Rectangle {
                                 vertical-alignment: center;
                             }
                             Text {
-                                text: root.locked-at(row * 3 + col) ? "锚点" : ("≥" + root.floor-at(row * 3 + col) + "%");
+                                text: root.locked-at(row * 3 + col) ? "固定" : ("≥" + root.floor-at(row * 3 + col) + "%");
                                 font-size: 9px;
                                 font-family: Theme.font-mono;
                                 color: Theme.text-3;

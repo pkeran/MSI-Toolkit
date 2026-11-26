@@ -70,6 +70,7 @@ mod cmd {
     pub const RELEASE_OVERRIDES: i32 = 55;
     pub const RECONNECT: i32 = 60;
     pub const BANNER: i32 = 61;
+    pub const TOAST_DISMISS: i32 = 62;
     pub const OPEN_SETTINGS: i32 = 63;
     pub const MONITOR_PAUSE: i32 = 70;
     pub const MONITOR_WINDOW: i32 = 71;
@@ -96,8 +97,8 @@ mod cmd {
     pub const LAUNCH_UNINSTALL: i32 = 103;
 }
 
-const TRANSIENT_TTL: Duration = Duration::from_secs(4);
-const MIN_WINDOW: (f32, f32) = (960.0, 620.0);
+const TOAST_TTL: Duration = Duration::from_millis(3_200);
+const MIN_WINDOW: (f32, f32) = (820.0, 580.0);
 
 /// Process start, used for the first-frame measurement (the software renderer
 /// has no `RenderingSetup` hook, so "frame is up" is observed from the DWM
@@ -126,7 +127,10 @@ struct App {
     dark: bool,
     started: Instant,
     report: dwm::DwmReport,
-    transient: Option<(Notice, Instant)>,
+    toast_visible: bool,
+    toast_seq: u64,
+    toast_notice: Notice,
+    app_installed: bool,
     demo_tick: u64,
     subscriptions: SubscriptionPlan,
     pending_control: Option<(u64, ControlChange)>,
@@ -180,8 +184,29 @@ fn curves_from(snapshot: &SystemSnapshot) -> [CurveEditor; 2] {
 }
 
 impl App {
-    /// Pushes the whole view model into the Slint globals. Called after every
-    /// state change; there is no incremental diffing because the shell is small.
+    fn push_toast(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let state = ui.global::<AppState>();
+        state.set_toast_level(self.toast_notice.level);
+        state.set_toast_title(self.toast_notice.title.clone().into());
+        state.set_toast_text(self.toast_notice.text.clone().into());
+        state.set_toast_visible(self.toast_visible);
+    }
+
+    fn push_system_metrics(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let state = ui.global::<AppState>();
+        state.set_session_seconds(self.started.elapsed().as_secs().min(i32::MAX as u64) as i32);
+        state.set_private_kib(dwm::private_kib().map_or(-1, |kib| kib as i32));
+        state.set_app_installed(if self.demo { true } else { self.app_installed });
+    }
+
+    /// Pushes the view model into Slint globals (used on state/config/tools changes,
+    /// NEVER on 1 Hz telemetry ticks or toast visibility toggles).
     fn push_all(&self) {
         let Some(ui) = self.ui.upgrade() else {
             return;
@@ -191,7 +216,11 @@ impl App {
         view::apply_curves(&state, &self.curves);
         view::apply_curve_flags(&state, &self.curves, self.curve_channel());
         view::apply_zones(&state, &self.zones, self.dark);
-        view::apply_history(&state, &self.history);
+        if state.get_page() == 6 {
+            view::apply_history(&state, &self.history);
+        } else if state.get_page() == 0 {
+            view::apply_history_paths(&state, &self.history);
+        }
         view::apply_system_tools(&state, &self.startup, &self.oem);
         view::apply_automation_rules(&state, &self.auto_rules, &self.auto_summary);
         state.set_oem_busy(self.oem_busy);
@@ -221,7 +250,7 @@ impl App {
         });
         state.set_connection_text(
             if self.demo {
-                "演示快照（无 IPC）"
+                "演示模式"
             } else if self.connected {
                 "服务已连接"
             } else if self.ipc.is_some() {
@@ -232,7 +261,6 @@ impl App {
             .into(),
         );
         state.set_demo(self.demo);
-        state.set_session_seconds(self.started.elapsed().as_secs().min(i32::MAX as u64) as i32);
         state.set_first_frame_ms(self.first_frame_ms);
         state.set_curve_apply_pending(self.pending_control.is_some());
         state.set_request_pending(self.pending_control.is_some() || self.config_pending.is_some());
@@ -243,14 +271,17 @@ impl App {
             state.set_osd_duration(i32::from(config.osd.duration_ms));
             state.set_update_auto_check(config.updates.auto_check);
             state.set_override_policy(match config.automation.manual_override {
-                msilt_core::ManualOverride::UntilReleased => "直到显式释放".into(),
-                msilt_core::ManualOverride::Timed { seconds } => format!("{seconds} 秒").into(),
+                msilt_core::ManualOverride::UntilReleased => "手动恢复前保持".into(),
+                msilt_core::ManualOverride::Timed { seconds } => format!("{seconds} 秒后恢复自动").into(),
             });
         }
-        state.set_app_installed(if self.demo { true } else { updater::is_installed() });
+        state.set_app_installed(if self.demo { true } else { self.app_installed });
         state.set_diagnostic(self.endpoint.diagnostic);
-        state.set_render_backend("renderer-software".into());
-        state.set_private_kib(dwm::private_kib().map_or(-1, |kib| kib as i32));
+        state.set_render_backend("纯 CPU 软件渲染".into());
+        if state.get_page() == 7 {
+            state.set_session_seconds(self.started.elapsed().as_secs().min(i32::MAX as u64) as i32);
+            state.set_private_kib(dwm::private_kib().map_or(-1, |kib| kib as i32));
+        }
         state.set_diagnostics_hint(self.report.summary().into());
         state.set_update_state(self.update_state);
         state.set_update_latest(
@@ -262,13 +293,9 @@ impl App {
         );
         state.set_update_status_text(self.update_status_text.clone().into());
 
-        let installed = !self.demo && updater::is_installed();
-        let notice = self
-            .transient
-            .as_ref()
-            .filter(|(_, at)| at.elapsed() < TRANSIENT_TTL)
-            .map(|(notice, _)| clone_notice(notice))
-            .or_else(|| view::notice(&self.snapshot, self.connected, self.demo, installed))
+        // Persistent banner ONLY for actionable blockers or new-version notice (never transient spam).
+        let installed = !self.demo && self.app_installed;
+        let notice = view::notice(&self.snapshot, self.connected, self.demo, installed)
             .or_else(|| {
                 (self.update_state == 3).then(|| {
                     let tag = self
@@ -279,7 +306,7 @@ impl App {
                     Notice {
                         level: 4,
                         title: format!("发现新版本 {tag}"),
-                        text: "已通过 GitHub Releases 检测到更新，可在「系统与工具」校验并一键升级。".into(),
+                        text: "可在「系统与工具」中一键升级。".into(),
                         action: "前往更新".into(),
                     }
                 })
@@ -299,6 +326,9 @@ impl App {
                 state.set_banner_action("".into());
             }
         }
+
+        // Sync floating toast state as well.
+        self.push_toast();
     }
 
     fn curve_channel(&self) -> usize {
@@ -309,16 +339,33 @@ impl App {
     }
 
     fn transient(&mut self, level: i32, title: &str, text: String) {
-        self.transient = Some((
-            Notice { level, title: title.to_string(), text, action: String::new() },
-            Instant::now(),
-        ));
-        Timer::single_shot(TRANSIENT_TTL, || with_app(|app| {
-            if app.transient.as_ref().is_some_and(|(_, at)| at.elapsed() >= TRANSIENT_TTL) {
-                app.transient = None;
-                app.push_all();
-            }
-        }));
+        self.toast_seq = self.toast_seq.wrapping_add(1);
+        let seq = self.toast_seq;
+        self.toast_notice = Notice {
+            level,
+            title: title.to_string(),
+            text,
+            action: String::new(),
+        };
+        self.toast_visible = true;
+        self.push_toast();
+        Timer::single_shot(TOAST_TTL, move || {
+            with_app(|app| {
+                if app.toast_seq == seq && app.toast_visible {
+                    // Keep title/text intact while fading out smoothly.
+                    app.toast_visible = false;
+                    app.push_toast();
+                }
+            });
+        });
+    }
+
+    fn dismiss_toast(&mut self) {
+        self.toast_seq = self.toast_seq.wrapping_add(1);
+        if self.toast_visible {
+            self.toast_visible = false;
+            self.push_toast();
+        }
     }
 
     fn apply_snapshot(&mut self, snapshot: SystemSnapshot) {
@@ -337,8 +384,13 @@ impl App {
         self.history.push(sample);
         let age = unix_now_ms().saturating_sub(sample.sampled_at_unix_ms);
         if let Some(ui) = self.ui.upgrade() {
-            view::apply_telemetry(&ui.global::<AppState>(), sample, age);
-            view::apply_history(&ui.global::<AppState>(), &self.history);
+            let state = ui.global::<AppState>();
+            view::apply_telemetry(&state, sample, age);
+            match state.get_page() {
+                0 => view::apply_history_paths(&state, &self.history),
+                6 => view::apply_history(&state, &self.history),
+                _ => {}
+            }
         }
     }
 
@@ -352,7 +404,7 @@ impl App {
         self.oem_busy = false;
         self.config = None;
         self.ipc = None;
-        self.transient(2, "daemon 已断开", reason);
+        self.transient(2, "后台服务已断开", reason);
     }
 
     fn sync_subscriptions(&mut self) {
@@ -363,7 +415,7 @@ impl App {
         if let Some(topics) = self.subscriptions.next(desired) {
             if let Some(ipc) = self.ipc.as_ref() {
                 if let Err(error) = ipc.send(IpcCommand::SetSubscriptions { topics }) {
-                    self.on_disconnect(format!("订阅更新失败：{error}"));
+                    self.on_disconnect(format!("连接中断：{error}"));
                 }
             }
         }
@@ -371,18 +423,18 @@ impl App {
 
     fn submit(&mut self, change: ControlChange) {
         if self.demo {
-            self.transient(4, "演示模式", "写入已忽略：演示快照不会触碰任何硬件。".into());
+            self.transient(4, "演示模式", "当前为演示模式，不会改动本机硬件。".into());
             return;
         }
         if self.endpoint.diagnostic || self.pending_control.is_some() || !self.connected {
             return;
         }
         if !view::can_submit(&self.snapshot, &change) {
-            self.transient(1, "当前操作不可用", "请按最新快照中的可写能力与候选值选择。".into());
+            self.transient(1, "暂不支持此选项", "当前设备或状态无法应用该设置。".into());
             return;
         }
         let Some(ipc) = self.ipc.as_ref() else {
-            self.transient(2, "未连接", "daemon 未连接，命令没有发出。".into());
+            self.transient(2, "后台服务未连接", "请先启动或重新连接后台服务。".into());
             return;
         };
         let command = IpcCommand::Control {
@@ -392,17 +444,30 @@ impl App {
         match ipc.send(command) {
             Ok(id) => {
                 self.pending_control = Some((id, change));
-                self.transient(4, "已提交", "等待 daemon 回执与应用后快照。".into());
+                if let Some(ui) = self.ui.upgrade() {
+                    let state = ui.global::<AppState>();
+                    state.set_curve_apply_pending(true);
+                    state.set_request_pending(true);
+                }
             }
-            Err(error) => self.on_disconnect(format!("IPC 写入失败：{error}")),
+            Err(error) => self.on_disconnect(format!("发送失败：{error}")),
         }
     }
 
     fn on_command(&mut self, kind: i32, a: i32, b: i32) {
         match kind {
             cmd::PAGE => {
+                let target = a.clamp(0, 7);
                 if let Some(ui) = self.ui.upgrade() {
-                    ui.global::<AppState>().set_page(a.clamp(0, 7));
+                    let state = ui.global::<AppState>();
+                    state.set_page(target);
+                    if target == 0 {
+                        view::apply_history_paths(&state, &self.history);
+                    } else if target == 6 {
+                        view::apply_history(&state, &self.history);
+                    } else if target == 7 {
+                        self.push_system_metrics();
+                    }
                 }
                 self.sync_subscriptions();
                 return;
@@ -418,11 +483,23 @@ impl App {
                 if let Some(editor) = self.curves.get_mut(a.clamp(0, 1) as usize) {
                     editor.reset();
                 }
+                if let Some(ui) = self.ui.upgrade() {
+                    let state = ui.global::<AppState>();
+                    view::apply_curves(&state, &self.curves);
+                    view::apply_curve_flags(&state, &self.curves, self.curve_channel());
+                }
+                return;
             }
             cmd::CURVE_PRESET => {
                 if let Some(editor) = self.curves.get_mut(a.clamp(0, 1) as usize) {
                     editor.preset(b.clamp(0, 2) as u8);
                 }
+                if let Some(ui) = self.ui.upgrade() {
+                    let state = ui.global::<AppState>();
+                    view::apply_curves(&state, &self.curves);
+                    view::apply_curve_flags(&state, &self.curves, self.curve_channel());
+                }
+                return;
             }
             cmd::CURVE_APPLY => {
                 let channel = a.clamp(0, 1) as usize;
@@ -433,6 +510,10 @@ impl App {
             }
             cmd::ZONE_PRESET => {
                 self.zones.apply_preset(b.clamp(0, 3) as usize);
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
+                return;
             }
             cmd::ZONE_SELECT => {
                 if a == 1 {
@@ -440,18 +521,27 @@ impl App {
                 } else {
                     self.zones.select_none();
                 }
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
+                return;
             }
             cmd::ZONE_BRIGHTNESS => {
                 self.zones.set_brightness(a);
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
+                return;
             }
             cmd::ZONE_APPLY => {
                 let zones = self.zones.scaled();
                 self.submit(ControlChange::SetKeyboardLighting { zones });
-                if let Some(ui) = self.ui.upgrade() {
-                    ui.global::<AppState>().set_keyboard_submit(
-                        if self.demo { "演示：未提交" } else { "已提交（设备不回读）" }.into(),
-                    );
+                if self.demo {
+                    if let Some(ui) = self.ui.upgrade() {
+                        ui.global::<AppState>().set_keyboard_submit("演示模式".into());
+                    }
                 }
+                return;
             }
             cmd::MODE => {
                 if let Some(mode) = self.snapshot.hardware.supported_performance_modes.get(a as usize).copied() {
@@ -484,12 +574,16 @@ impl App {
                 return;
             }
             cmd::RECONNECT => {
-                self.transient(4, "正在重连", "重新打开 IPC 管道并握手。".into());
+                self.transient(4, "正在重新连接", "正在连接后台服务…".into());
                 self.ipc = None;
                 self.connected = false;
                 self.subscriptions = SubscriptionPlan::default();
                 self.pending_control = None;
                 schedule_connect(self.ui.clone(), 0);
+                return;
+            }
+            cmd::TOAST_DISMISS => {
+                self.dismiss_toast();
                 return;
             }
             cmd::MONITOR_PAUSE => {
@@ -502,9 +596,10 @@ impl App {
             }
             cmd::MONITOR_WINDOW => {
                 if let Some(ui) = self.ui.upgrade() {
-                    ui.global::<AppState>().set_monitor_window(a.clamp(1, 15));
+                    let state = ui.global::<AppState>();
+                    state.set_monitor_window(a.clamp(1, 15));
+                    view::apply_history(&state, &self.history);
                 }
-                self.push_all();
                 return;
             }
             cmd::GPU_TELEMETRY => {
@@ -513,9 +608,9 @@ impl App {
                     state.set_gpu_telemetry(!state.get_gpu_telemetry());
                 }
                 self.transient(
-                    0,
-                    "GPU 遥测策略",
-                    "为避免无故唤醒独显，GPU 温度/功耗由 daemon 通过 WMI/EC 路径被动采集，不加载 NVML。".into(),
+                    4,
+                    "低功耗监控模式",
+                    "GPU 温度通过系统接口读取，不会额外唤醒独立显卡。".into(),
                 );
                 return;
             }
@@ -586,7 +681,7 @@ impl App {
                     _ => (OemAction::RestoreBackup {}, "已从可逆备份恢复 MSI 官方软件原始启动状态"),
                 };
                 if self.demo {
-                    self.transient(4, "演示模式", "官软控制命令在真实 daemon 模式下执行，演示快照不会改动本机服务。".into());
+                    self.transient(4, "演示模式", "演示模式下不会改动本机 MSI 软件。".into());
                 } else {
                     self.oem_busy = true;
                     self.pending_tools_notice = Some(notice);
@@ -605,11 +700,11 @@ impl App {
                 }
                 let Some(package) = package_from(a) else { return; };
                 if self.demo {
-                    self.transient(4, "演示模式", "卸载命令在真实 daemon 模式下执行，演示模式不会卸载本机软件。".into());
+                    self.transient(4, "演示模式", "演示模式下不会卸载本机软件。".into());
                 } else {
                     self.oem_busy = true;
-                    self.pending_tools_notice = Some("已执行官方软件卸载并重新校验底层驱动保护");
-                    self.transient(4, "正在卸载", "已发起卸载并保持 msiapcfg.dll / WmiAcpi 驱动保护。".into());
+                    self.pending_tools_notice = Some("卸载已完成，底层硬件驱动保持完好");
+                    self.transient(4, "正在卸载", "正在卸载所选 MSI 软件，底层硬件驱动将保持完好。".into());
                     self.send_simple(IpcCommand::ManageOem {
                         action: OemAction::UninstallPackage { package },
                     });
@@ -620,7 +715,7 @@ impl App {
                     self.oem_busy = true;
                     self.send_simple(IpcCommand::GetSystemTools {});
                 } else {
-                    self.transient(4, "已刷新", "演示快照已重新加载。".into());
+                    self.transient(4, "已刷新", String::new());
                 }
             }
             cmd::RULE_TOGGLE => {
@@ -666,9 +761,9 @@ impl App {
             cmd::DRY_RUN => {
                 if self.demo {
                     if let Some(ui) = self.ui.upgrade() {
-                        ui.global::<AppState>().set_dry_run_result("试跑完成：当前 AC 供电下 1 条规则命中，0 条冲突。".into());
+                        ui.global::<AppState>().set_dry_run_result("测试完成：当前已接电源，命中 1 条规则，无冲突。".into());
                     }
-                    self.transient(3, "试跑完成", "已按当前快照完成无副作用规则评估。".into());
+                    self.transient(3, "模拟测试完成", "当前规则配置正常，无冲突。".into());
                 } else {
                     self.send_simple(IpcCommand::DryRunAutomation {});
                 }
@@ -676,7 +771,7 @@ impl App {
             cmd::RELEASE_OVERRIDES => {
                 if self.demo {
                     self.snapshot.manual_overrides.clear();
-                    self.transient(3, "已释放", "已释放演示快照中的所有人工占用。".into());
+                    self.transient(3, "已恢复自动切换", String::new());
                 } else if !self.snapshot.manual_overrides.is_empty() {
                     self.pending_releases = self.snapshot.manual_overrides.clone();
                     if let Some(target) = self.pending_releases.pop() {
@@ -687,7 +782,7 @@ impl App {
             }
             cmd::TEST_OSD => {
                 if self.demo {
-                    self.transient(4, "演示模式", "测试 OSD 需连接 msilt-daemon，由 daemon 纯软件绘制悬浮提示。".into());
+                    self.transient(4, "演示模式", "请连接后台服务以预览屏幕悬浮提示。".into());
                 } else {
                     self.send_simple(IpcCommand::TestOsd {});
                 }
@@ -738,10 +833,11 @@ impl App {
             }
             cmd::BANNER => {
                 if !self.connected && !self.demo {
-                    if updater::is_installed() {
+                    self.app_installed = updater::is_installed();
+                    if self.app_installed {
                         match updater::start_installed_daemon() {
                             Ok(()) => {
-                                self.transient(4, "正在启动后台服务", "已拉起 msilt-daemon，正在建立连接…".into());
+                                self.transient(4, "正在启动服务", "正在建立连接…".into());
                                 self.ipc = None;
                                 self.connected = false;
                                 self.subscriptions = SubscriptionPlan::default();
@@ -749,7 +845,7 @@ impl App {
                                 schedule_connect(self.ui.clone(), 1);
                             }
                             Err(err) => {
-                                self.transient(1, "未启动后台服务", err);
+                                self.transient(1, "启动服务失败", err);
                             }
                         }
                         self.push_all();
@@ -758,6 +854,7 @@ impl App {
                     }
                 } else if let Some(ui) = self.ui.upgrade() {
                     ui.global::<AppState>().set_page(7);
+                    self.push_system_metrics();
                     self.sync_subscriptions();
                 }
                 return;
@@ -894,7 +991,7 @@ impl App {
         if !self.connected {
             self.oem_busy = false;
             self.pending_tools_notice = None;
-            self.transient(2, "未连接", "daemon 未连接，命令没有发出。".into());
+            self.transient(2, "后台服务未连接", "请先启动或重新连接后台服务。".into());
             return;
         }
         let Some(ipc) = self.ipc.as_ref() else {
@@ -905,7 +1002,7 @@ impl App {
         if let Err(error) = ipc.send(command) {
             self.oem_busy = false;
             self.pending_tools_notice = None;
-            self.on_disconnect(format!("IPC 发送失败：{error}"));
+            self.on_disconnect(format!("发送失败：{error}"));
         }
     }
 
@@ -931,12 +1028,17 @@ impl App {
                 return;
             }
             self.submit(ControlChange::SetColorProfile { profile_id: profile });
+            return;
         } else if kind == cmd::ZONE_COLOR {
             if let Some(rgb) = editor::parse_hex_rgb(value.as_str()) {
                 self.zones.paint(rgb);
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
             } else {
                 self.transient(1, "颜色格式无效", "请输入 6 位十六进制颜色，例如 #38BDF8。".into());
             }
+            return;
         }
         self.push_all();
     }
@@ -976,14 +1078,18 @@ impl App {
     }
 
     fn on_response(&mut self, id: u64, reply: IpcResult) {
-        let control = self.pending_control.as_ref().is_some_and(|(pending, _)| *pending == id);
-        if control { self.pending_control = None; }
+        let completed_change = if self.pending_control.as_ref().is_some_and(|(pending, _)| *pending == id) {
+            self.pending_control.take().map(|(_, change)| change)
+        } else {
+            None
+        };
+        let control = completed_change.is_some();
         if self.config_pending == Some(id) { self.config_pending = None; }
         match reply {
             IpcResult::Ok { reply } => match reply {
                 IpcReply::Hello { snapshot, version } => {
                     if version != msilt_core::IPC_VERSION {
-                        self.on_disconnect("IPC 版本不匹配".into());
+                        self.on_disconnect("版本不兼容，请重启或重新安装".into());
                         return;
                     }
                     // Revision belongs to a daemon generation, not the lifetime of the UI.
@@ -1000,7 +1106,7 @@ impl App {
                 }
                 IpcReply::Subscriptions { snapshot, topics } => {
                     if !self.subscriptions.acknowledge(topics) {
-                        self.on_disconnect("订阅回执与请求不匹配".into());
+                        self.on_disconnect("连接状态异常，请重新连接".into());
                         return;
                     }
                     self.apply_snapshot(snapshot);
@@ -1011,6 +1117,22 @@ impl App {
                         self.curves = curves_from(&snapshot);
                     }
                     self.apply_snapshot(snapshot);
+                    match completed_change {
+                        Some(ControlChange::SetFanCurve { channel, .. }) => {
+                            let label = match channel {
+                                FanChannel::Cpu => "CPU 风扇曲线已应用",
+                                FanChannel::Gpu => "GPU 风扇曲线已应用",
+                            };
+                            self.transient(3, label, String::new());
+                        }
+                        Some(ControlChange::SetKeyboardLighting { .. }) => {
+                            if let Some(ui) = self.ui.upgrade() {
+                                ui.global::<AppState>().set_keyboard_submit("已应用".into());
+                            }
+                            self.transient(3, "键盘灯效已应用", String::new());
+                        }
+                        _ => {}
+                    }
                     if let Some(next_target) = self.pending_releases.pop() {
                         let expected_revision = self.snapshot.revision;
                         self.send_simple(IpcCommand::ReleaseManualOverride {
@@ -1068,14 +1190,14 @@ impl App {
                     }
                 }
                 IpcReply::OsdShown {} => {
-                    self.transient(3, "OSD 测试已显示", "daemon 已在屏幕右下角绘制纯软件悬浮通知。".into());
+                    self.transient(3, "悬浮提示已显示", "已在屏幕右下角预览效果。".into());
                 }
             },
             IpcResult::Error { error } => {
                 self.oem_busy = false;
                 self.pending_tools_notice = None;
                 self.pending_releases.clear();
-                self.transient(2, "daemon 拒绝了请求", error_code_text(error.code));
+                self.transient(2, "操作未生效", error_code_text(error.code));
             }
         }
     }
@@ -1118,38 +1240,28 @@ fn demo_preset_meta(preset: AutomationPreset) -> (&'static str, &'static str, &'
     }
 }
 
-fn clone_notice(notice: &Notice) -> Notice {
-    Notice {
-        level: notice.level,
-        title: notice.title.clone(),
-        text: notice.text.clone(),
-        action: notice.action.clone(),
-    }
-}
-
 fn error_code_text(code: msilt_core::ErrorCode) -> String {
     use msilt_core::ErrorCode as E;
     let text = match code {
-        E::InvalidRequest => "请求格式不正确",
-        E::IncompatibleVersion => "客户端与守护进程版本不兼容，请更新安装",
-        E::AccessDenied => "当前登录会话无权访问",
-        E::NotReady => "守护进程尚未就绪",
-        E::Unsupported => "当前设备不支持此项或该取值",
-        E::ReadOnlyFirmware => "当前主板或固件不支持 EC 写入",
-        E::DeniedWrite => "该写入未获授权",
-        E::WriteNotAllowed => "当前状态下不允许写入",
-        E::ValidationFailed => "参数未通过校验",
-        E::RevisionConflict => "状态已更新，请复核后再应用",
-        E::RequestExpired => "请求未执行：排队已超时",
-        E::ConflictDetected => "检测到控制冲突",
-        E::Busy => "请求未执行：守护进程繁忙",
-        E::TimedOut => "操作未确认，请先查看当前状态",
+        E::InvalidRequest => "请求格式有误",
+        E::IncompatibleVersion => "程序与后台服务版本不一致，请更新或重启",
+        E::AccessDenied => "当前账户权限不足",
+        E::NotReady => "后台服务正在初始化，请稍后再试",
+        E::Unsupported => "当前设备不支持此项设置",
+        E::ReadOnlyFirmware => "当前机型暂不支持该项硬件调节",
+        E::DeniedWrite => "该操作受硬件安全策略保护",
+        E::WriteNotAllowed => "当前为仅查看模式，无法修改",
+        E::ValidationFailed => "设置值超出允许范围",
+        E::RevisionConflict => "硬件状态刚有变化，请再试一次",
+        E::RequestExpired => "等待超时，请重试",
+        E::ConflictDetected => "被其他软件占用或状态冲突",
+        E::Busy => "后台正在处理上一项操作，请稍候",
+        E::TimedOut => "硬件响应超时，请确认当前状态",
         E::BackendUnavailable => "硬件接口暂不可用",
-        E::WriteFailed => "应用失败",
-        E::VerificationFailed => "实际值未通过确认",
-        E::RollbackFailed => "EC 写入已暂停，需恢复安全状态",
-        E::RecoveryRequired => "EC 写入已暂停，需恢复安全状态",
-        E::Internal => "守护进程发生错误",
+        E::WriteFailed => "设置未能写入硬件",
+        E::VerificationFailed => "硬件未确认生效，请重试",
+        E::RollbackFailed | E::RecoveryRequired => "为保护硬件已暂停控制，请重启服务或重启电脑",
+        E::Internal => "后台服务出现内部异常",
     };
     text.to_string()
 }
@@ -1167,23 +1279,36 @@ fn process_inbox() {
     if items.is_empty() {
         return;
     }
+    let Some(mut app) = take_app() else {
+        return;
+    };
+    let mut needs_full_push = false;
     for item in items {
-        let Some(mut app) = take_app() else {
-            return;
-        };
         match item {
             Incoming::Message(IpcMessage::Event(event)) => match event {
-                IpcEvent::StateChanged { snapshot } => app.apply_snapshot(snapshot),
+                IpcEvent::StateChanged { snapshot } => {
+                    app.apply_snapshot(snapshot);
+                    needs_full_push = true;
+                }
+                // 1 Hz telemetry updates ONLY scalar readouts + active trend chart (never full model rebuild).
                 IpcEvent::TelemetryTick { sample } => app.apply_telemetry(&sample),
                 IpcEvent::OsdNotify { .. } => {}
             },
-            Incoming::Message(IpcMessage::Response(response)) => app.on_response(response.id, response.result),
+            Incoming::Message(IpcMessage::Response(response)) => {
+                app.on_response(response.id, response.result);
+                needs_full_push = true;
+            }
             Incoming::Message(IpcMessage::Request(_)) => {}
-            Incoming::Lost(reason) => app.on_disconnect(reason),
+            Incoming::Lost(reason) => {
+                app.on_disconnect(reason);
+                needs_full_push = true;
+            }
         }
-        app.push_all();
-        put_app(app);
     }
+    if needs_full_push {
+        app.push_all();
+    }
+    put_app(app);
 }
 
 fn schedule_connect(ui: slint::Weak<AppWindow>, attempt: u32) {
@@ -1214,7 +1339,7 @@ fn schedule_connect(ui: slint::Weak<AppWindow>, attempt: u32) {
                     app.subscriptions = SubscriptionPlan::default();
                     app.ipc = slot.take();
                     if !hello_sent {
-                        app.transient(2, "握手失败", "无法向 daemon 发送 Hello。".into());
+                        app.transient(2, "连接失败", "无法连接到后台服务。".into());
                     }
                     app.push_all();
                 });
@@ -1322,7 +1447,10 @@ fn run(options: Options) -> ExitCode {
         dark,
         started: Instant::now(),
         report,
-        transient: None,
+        toast_visible: false,
+        toast_seq: 0,
+        toast_notice: Notice { level: 4, title: String::new(), text: String::new(), action: String::new() },
+        app_installed: !demo && updater::is_installed(),
         demo_tick: 0,
         subscriptions: SubscriptionPlan::default(),
         pending_control: None,
@@ -1336,7 +1464,7 @@ fn run(options: Options) -> ExitCode {
         pending_tools_notice: None,
         pending_releases: Vec::new(),
         auto_rules: if demo { demo::automation_rules() } else { Vec::new() },
-        auto_summary: if demo { "演示规则集 · 2 条已加载".into() } else { "等待 daemon 规则同步".into() },
+        auto_summary: if demo { "演示规则 · 2 条已加载".into() } else { "正在读取规则…".into() },
         update_state: 0,
         update_status_text: format!("当前 v{} · GitHub Releases", env!("CARGO_PKG_VERSION")),
         update_release: None,
@@ -1351,8 +1479,8 @@ fn run(options: Options) -> ExitCode {
         state.set_daemon_version(env!("CARGO_PKG_VERSION").into());
         state.set_page(options.page);
         state.set_keyboard_conflict(false);
-        state.set_keyboard_layout("24 区 Per-Zone RGB".into());
-        state.set_automation_summary("等待 daemon 规则同步".into());
+        state.set_keyboard_layout("24 区背光".into());
+        state.set_automation_summary("正在读取规则…".into());
         state.set_monitor_window(5);
         state.set_osd_duration(1800);
     }
@@ -1542,18 +1670,16 @@ fn check_layout() -> ExitCode {
     }
 
     println!("MSI-Toolkit UI · 布局与交互自检");
-    println!("  窗口            1120x720 逻辑像素（最小 960x620，自适应缩放）");
+    println!("  窗口            1120x720 逻辑像素（最小 820x580，支持半屏分屏与自适应缩放）");
     println!("  顶栏            40 px（与导航共用 Mica）· 状态胶囊 24 px");
-    println!("  左导航          184 px（紧凑 48 px，<980px 自动收起）· 无边框项高 36 px · 3x16 强调条");
-    println!("  内容区          Magpie 两级节奏（组内 2 px / 组头 8 px / 组间 24 px，设置页 960px 居中）");
-    println!("  设置卡片        66 px 横排三段 · 圆角 4 px · 暗色内凹描边 #232323");
-    println!("  控件体系        FluentButton 4 变体（含顶/底微斜角）· FluentSegmentBar · KeyChip · SettingsExpander");
+    println!("  左导航          184 px（紧凑 48 px，<1008px 自动收起）· 无边框项高 36 px · 3x16 强调条");
+    println!("  内容区          设置页居中 1000px · 工作区居中 1200px · 悬浮 Toast 零位移渐入渐出");
+    println!("  控件体系        FluentButton · FluentSegmentBar 丝滑滑块 · FluentToggle · SettingsExpander");
     println!("  字体            14/13/12 px（Segoe UI Variable）· 数值 Cascadia Mono");
-    println!("  页面            8 个（总览/性能与风扇/显卡与显示/电池与电源/键盘灯效/自动化/监控与 OSD/系统与工具）");
-    println!("  风扇节点        6 × 2 通道，2x3 步进栅格（960px 零裁剪），下限 {MAX_DUTY_REF}");
-    println!("  键盘矩阵        6 × 4 = 24 区，等比键帽比例，10 色板 + #RRGGBB 选区涂色");
-    println!("  渲染后端        renderer-software + backend-winit（0 GPU 上下文）");
-    println!("  实测基线        11.8 MiB Private · ~110 ms 首帧 · 0 显存");
+    println!("  页面            8 个（总览/性能与风扇/显卡与显示/电池与电源/键盘灯效/自动化/监控与提示/系统与工具）");
+    println!("  风扇节点        6 × 2 通道，2x3 步进栅格，下限 {MAX_DUTY_REF}");
+    println!("  键盘矩阵        6 × 4 = 24 区等比缩放键盘 + 2D HSV 色盘");
+    println!("  渲染后端        纯 CPU 软件渲染（renderer-software + backend-winit，0 GPU 上下文）");
 
     if failures.is_empty() {
         println!("\n结果：通过（0 项失败）");

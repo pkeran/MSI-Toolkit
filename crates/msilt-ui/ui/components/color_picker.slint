@@ -70,7 +70,8 @@ export component ColorPicker inherits Rectangle {
 
         // 2D Saturation (X) x Value (Y) interactive gradient pad
         sv-pad := Rectangle {
-            height: 112px;
+            min-height: 112px;
+            vertical-stretch: 1;
             border-radius: Theme.radius-sm;
             clip: true;
             border-width: 1px;
@@ -193,7 +194,6 @@ export component ColorPicker inherits Rectangle {
                 background: root.swatch-colors[i];
                 border-width: sw-ta.has-hover ? 2px : 1px;
                 border-color: sw-ta.has-hover ? Theme.text : Theme.card-stroke;
-                animate border-color { duration: Theme.dur-hover; easing: ease-out; }
 
                 sw-ta := TouchArea {
                     enabled: root.enabled;

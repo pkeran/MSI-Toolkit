@@ -1,38 +1,117 @@
-// Page 7: System & Tools — built-in Launch on Startup switch, theme switcher,
-// complete MSI OEM Software Controller (disable autostart / stop / restore / uninstall),
-// hardware identity, Magpie KeyChip shortcuts, and collapsible DWM diagnostics.
+// Page 7: System & Tools — startup, theme, updates, MSI official software
+// manager, hardware info, shortcuts, and collapsible technical details.
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
-import { Switch } from "std-widgets.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { SettingsCard } from "../components/settings_card.slint";
 import { SettingsExpander, SettingsExpanderItem } from "../components/settings_expander.slint";
 import { FluentButton } from "../components/fluent_button.slint";
 import { FluentSegmentBar } from "../components/fluent_segment.slint";
+import { FluentToggle } from "../components/fluent_toggle.slint";
 import { KeyChip } from "../components/key_chip.slint";
 import { InfoBar } from "../components/info_bar.slint";
 import { SectionLabel, KeyValue, Chip } from "../components/primitives.slint";
 import { Icon } from "../icons.slint";
 
+component OemActionButtons inherits Rectangle {
+    background: transparent;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        spacing: 8px;
+        FluentButton {
+            text: "关闭自启";
+            variant: 0;
+            compact: true;
+            width: 90px;
+            enabled: AppState.interactive && !AppState.oem-busy;
+            clicked => { AppState.command(85, AppState.oem-scope, 0); }
+        }
+        FluentButton {
+            text: "立即停止";
+            variant: 0;
+            compact: true;
+            width: 90px;
+            enabled: AppState.interactive && !AppState.oem-busy;
+            clicked => { AppState.command(86, AppState.oem-scope, 0); }
+        }
+        FluentButton {
+            text: "禁启并停止";
+            variant: 1;
+            compact: true;
+            width: 92px;
+            enabled: AppState.interactive && !AppState.oem-busy;
+            clicked => { AppState.command(87, AppState.oem-scope, 0); }
+        }
+        FluentButton {
+            text: "恢复备份";
+            glyph: "restore";
+            variant: 0;
+            compact: true;
+            width: 92px;
+            enabled: AppState.interactive && AppState.oem-has-backup && !AppState.oem-busy;
+            clicked => { AppState.command(88, 0, 0); }
+        }
+    }
+}
+
+component IdentityCard inherits Rectangle {
+    horizontal-stretch: 1;
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 6px;
+        SectionLabel { text: "硬件信息"; glyph: "chip"; }
+        KeyValue { k: "主板型号"; v: AppState.board-id; row-height: 24px; }
+        KeyValue { k: "EC 固件"; v: AppState.ec-firmware; row-height: 24px; }
+        KeyValue { k: "内置屏幕"; v: AppState.panel-info; row-height: 24px; }
+        KeyValue { k: "键盘背光"; v: AppState.keyboard-device; row-height: 24px; }
+    }
+}
+
+component RuntimeCard inherits Rectangle {
+    horizontal-stretch: 1;
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 6px;
+        SectionLabel { text: "运行状态"; glyph: "shield"; }
+        KeyValue { k: "硬件控制状态"; v: Fmt.ec-name(AppState.ec-write-status); mono: false; level: AppState.ec-writable ? 3 : 1; row-height: 24px; }
+        KeyValue { k: "手动锁定项"; v: "" + AppState.override-count + " 项"; row-height: 24px; }
+        KeyValue { k: "界面渲染"; v: "纯 CPU 软件渲染"; mono: false; row-height: 24px; }
+        KeyValue { k: "界面内存"; v: Fmt.nu(AppState.private-kib, "KiB"); row-height: 24px; }
+    }
+}
+
 export component SystemPage inherits Rectangle {
     in-out property <bool> oem-expanded: false;
     in-out property <bool> diag-expanded: false;
+    property <bool> wide-oem: root.width >= 740px;
+    property <bool> wide-info: root.width >= 640px;
 
     VerticalLayout {
         alignment: start;
         spacing: Theme.gap-group;
 
-        // ── Group 1: Startup, Appearance & Connection ───────────────────────
+        // ── Group 1: General ────────────────────────────────────────────────
         SettingsGroup {
             title: "常规";
 
             SettingsCard {
                 glyph: "power";
-                title: "登录时启动后台";
+                title: "开机自动启动";
                 card-height: 58px;
 
-                Switch {
+                FluentToggle {
                     checked: AppState.startup-enabled;
                     enabled: AppState.interactive && !AppState.oem-busy;
                     toggled => { AppState.command(83, AppState.startup-enabled ? 0 : 1, 0); }
@@ -68,12 +147,6 @@ export component SystemPage inherits Rectangle {
                     enabled: !AppState.demo;
                     clicked => { AppState.command(60, 0, 0); }
                 }
-                FluentButton {
-                    text: "诊断摘要";
-                    variant: 0;
-                    width: 96px;
-                    clicked => { AppState.command(80, 0, 0); }
-                }
             }
 
             SettingsCard {
@@ -81,7 +154,7 @@ export component SystemPage inherits Rectangle {
                 title: "启动时自动检查更新";
                 card-height: 58px;
 
-                Switch {
+                FluentToggle {
                     checked: AppState.update-auto-check;
                     enabled: AppState.config-known && AppState.interactive;
                     toggled => { AppState.command(99, AppState.update-auto-check ? 0 : 1, 0); }
@@ -90,9 +163,9 @@ export component SystemPage inherits Rectangle {
 
             SettingsCard {
                 glyph: "eye";
-                title: "切换模式时显示桌面提示";
+                title: "切换模式时显示悬浮提示";
                 card-height: 58px;
-                Switch {
+                FluentToggle {
                     checked: AppState.osd-enabled;
                     enabled: AppState.config-known && AppState.interactive;
                     toggled => { AppState.command(91, AppState.osd-enabled ? 0 : 1, 0); }
@@ -121,9 +194,9 @@ export component SystemPage inherits Rectangle {
                     clicked => { AppState.command(96, 0, 0); }
                 }
                 FluentButton {
-                    text: AppState.update-state == 3 ? "发行说明" : "GitHub";
+                    text: AppState.update-state == 3 ? "更新说明" : "GitHub";
                     variant: 0;
-                    width: 96px;
+                    width: 92px;
                     clicked => { AppState.command(98, 0, 0); }
                 }
             }
@@ -149,11 +222,10 @@ export component SystemPage inherits Rectangle {
             }
         }
 
-        // ── Group 2: Built-in MSI OEM Software Controller ───────────────────
+        // ── Group 2: MSI Official Software Manager ──────────────────────────
         SettingsGroup {
-            title: "MSI 官方软件控制";
+            title: "MSI 官方软件管理";
 
-            // Live overview + batch controls
             Rectangle {
                 background: Theme.card;
                 border-radius: Theme.radius-card;
@@ -176,7 +248,7 @@ export component SystemPage inherits Rectangle {
                             horizontal-stretch: 1;
                             spacing: 2px;
                             Text {
-                                text: "运行中服务 " + AppState.oem-running-services + " 个 · 活动官软进程 " + AppState.oem-running-procs + " 个（" + AppState.oem-proc-ram + "）";
+                                text: "运行中服务 " + AppState.oem-running-services + " 个 · 后台进程 " + AppState.oem-running-procs + " 个（" + AppState.oem-proc-ram + "）";
                                 font-size: Theme.font-card-title;
                                 font-weight: 500;
                                 color: Theme.text;
@@ -213,12 +285,11 @@ export component SystemPage inherits Rectangle {
                         }
                     }
 
-                    // Scope selector + 4 uniform-width concrete actions (all 94px)
-                    HorizontalLayout {
+                    if root.wide-oem : HorizontalLayout {
                         spacing: 8px;
 
                         FluentSegmentBar {
-                            width: 248px;
+                            width: 240px;
                             compact: true;
                             labels: ["全部", "核心", "灯效", "校色"];
                             values: [0, 1, 2, 3];
@@ -228,47 +299,32 @@ export component SystemPage inherits Rectangle {
 
                         Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                        FluentButton {
-                            text: "关闭自启";
-                            variant: 0;
+                        OemActionButtons { }
+                    }
+
+                    if !root.wide-oem : VerticalLayout {
+                        spacing: 8px;
+
+                        FluentSegmentBar {
                             compact: true;
-                            width: 94px;
-                            enabled: AppState.interactive && !AppState.oem-busy;
-                            clicked => { AppState.command(85, AppState.oem-scope, 0); }
+                            labels: ["全部", "核心", "灯效", "校色"];
+                            values: [0, 1, 2, 3];
+                            current: AppState.oem-scope;
+                            picked(v) => { AppState.command(84, v, 0); }
                         }
-                        FluentButton {
-                            text: "立即停止";
-                            variant: 0;
-                            compact: true;
-                            width: 94px;
-                            enabled: AppState.interactive && !AppState.oem-busy;
-                            clicked => { AppState.command(86, AppState.oem-scope, 0); }
-                        }
-                        FluentButton {
-                            text: "禁启并停止";
-                            variant: 1;
-                            compact: true;
-                            width: 94px;
-                            enabled: AppState.interactive && !AppState.oem-busy;
-                            clicked => { AppState.command(87, AppState.oem-scope, 0); }
-                        }
-                        FluentButton {
-                            text: "恢复备份";
-                            glyph: "restore";
-                            variant: 0;
-                            compact: true;
-                            width: 94px;
-                            enabled: AppState.interactive && AppState.oem-has-backup && !AppState.oem-busy;
-                            clicked => { AppState.command(88, 0, 0); }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            OemActionButtons { }
                         }
                     }
                 }
             }
 
-            // Expandable detail list of all managed MSI services / tasks / startups
             SettingsExpander {
                 glyph: "layers";
-                title: "受管服务与自启项";
+                title: "相关服务与启动项";
                 summary: "" + AppState.oem-items.length + " 项";
                 expanded <=> root.oem-expanded;
                 body-height: max(52px, AppState.oem-items.length * 44px);
@@ -289,7 +345,6 @@ export component SystemPage inherits Rectangle {
                 }
             }
 
-            // Dedicated Uninstall cards for the 3 official MSI software packages (with 2-step confirmation)
             for i in AppState.oem-packages.length : SettingsCard {
                 glyph: "trash";
                 title: "卸载 " + AppState.oem-packages[i].name;
@@ -335,52 +390,23 @@ export component SystemPage inherits Rectangle {
 
             if !AppState.oem-elevated : InfoBar {
                 level: 4;
-                text: "未提权：停用服务与卸载 SDK 需通过安装脚本注册管理员守护进程。";
+                text: "需要管理员权限才能停用或卸载 MSI 官方软件。";
             }
         }
 
-        // ── Group 3: Hardware Identity, Shortcuts & Diagnostics ─────────────
+        // ── Group 3: Hardware & Technical Info ──────────────────────────────
         SettingsGroup {
-            title: "硬件与诊断";
+            title: "硬件与信息";
 
-            HorizontalLayout {
+            if root.wide-info : HorizontalLayout {
                 spacing: Theme.gap;
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                    background: Theme.card;
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: Theme.card-stroke;
-
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 6px;
-                        SectionLabel { text: "硬件身份"; glyph: "chip"; }
-                        KeyValue { k: "主板型号"; v: AppState.board-id; row-height: 24px; }
-                        KeyValue { k: "EC 固件"; v: AppState.ec-firmware; row-height: 24px; }
-                        KeyValue { k: "内置面板"; v: AppState.panel-info; row-height: 24px; }
-                        KeyValue { k: "键盘 HID"; v: AppState.keyboard-device; row-height: 24px; }
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                    background: Theme.card;
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: Theme.card-stroke;
-
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 6px;
-                        SectionLabel { text: "运行状态"; glyph: "shield"; }
-                        KeyValue { k: "EC 写入通道"; v: Fmt.ec-name(AppState.ec-write-status); mono: false; level: AppState.ec-writable ? 3 : 1; row-height: 24px; }
-                        KeyValue { k: "人工占用目标"; v: "" + AppState.override-count + " 项"; row-height: 24px; }
-                        KeyValue { k: "渲染后端"; v: AppState.render-backend; row-height: 24px; }
-                        KeyValue { k: "UI 私有内存"; v: Fmt.nu(AppState.private-kib, "KiB"); row-height: 24px; }
-                    }
-                }
+                IdentityCard { }
+                RuntimeCard { }
+            }
+            if !root.wide-info : VerticalLayout {
+                spacing: Theme.gap;
+                IdentityCard { }
+                RuntimeCard { }
             }
 
             SettingsCard {
@@ -403,22 +429,22 @@ export component SystemPage inherits Rectangle {
 
             SettingsExpander {
                 glyph: "info";
-                title: "渲染与材质诊断";
-                summary: AppState.first-frame-ms >= 0 ? ("首帧 " + AppState.first-frame-ms + " ms") : "就绪";
+                title: "诊断详情";
+                summary: AppState.first-frame-ms >= 0 ? ("启动 " + AppState.first-frame-ms + " ms") : "就绪";
                 expanded <=> root.diag-expanded;
                 body-height: 98px;
 
                 SettingsExpanderItem {
-                    title: "DWM 回执";
+                    title: "窗口与渲染状态";
                     subtitle: AppState.diagnostics-hint == "" ? "—" : AppState.diagnostics-hint;
                     item-height: 52px;
                 }
 
                 SettingsExpanderItem {
-                    title: "会话运行时间";
+                    title: "本次运行时长";
                     item-height: 46px;
                     Text {
-                        text: "" + AppState.session-seconds + " s";
+                        text: "" + AppState.session-seconds + " 秒";
                         font-size: Theme.font-caption;
                         font-family: Theme.font-mono;
                         color: Theme.text-2;

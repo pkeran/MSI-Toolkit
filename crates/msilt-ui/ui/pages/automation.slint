@@ -1,29 +1,31 @@
-// Page 5: Automation — complete rule manager wired to daemon automation.toml
-// hot-reload, 1-click LLT-style presets, live dry-run diagnostics, and manual override release.
+// Page 5: Automation — rule manager with 1-click presets, live dry-run test,
+// manual priority controls, and responsive 4-up / 2x2 preset layout.
 
 import { Theme } from "../theme.slint";
 import { AppState } from "../state.slint";
-import { Switch } from "std-widgets.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { SettingsCard } from "../components/settings_card.slint";
 import { FluentButton } from "../components/fluent_button.slint";
+import { FluentToggle } from "../components/fluent_toggle.slint";
 import { InfoBar } from "../components/info_bar.slint";
 import { Chip } from "../components/primitives.slint";
 import { Icon } from "../icons.slint";
 
 export component AutomationPage inherits Rectangle {
+    property <bool> wide-presets: root.width >= 700px;
+
     VerticalLayout {
         alignment: start;
         spacing: Theme.gap-group;
 
-        // ── Group 1: Engine & Manual Override ───────────────────────────────
         SettingsGroup {
-            title: "引擎与控制权";
+            title: "自动化开关";
 
             SettingsCard {
                 glyph: "bolt";
-                title: "启用自动化引擎";
-                card-height: 58px;
+                title: "开启自动切换";
+                subtitle: "根据插电、电池电量或锁屏状态自动调整性能与屏幕";
+                card-height: 60px;
 
                 Text {
                     text: AppState.config-known ? (AppState.automation-enabled ? "已开启" : "已关闭") : "—";
@@ -31,7 +33,7 @@ export component AutomationPage inherits Rectangle {
                     color: Theme.text-2;
                     vertical-alignment: center;
                 }
-                Switch {
+                FluentToggle {
                     checked: AppState.automation-enabled;
                     enabled: AppState.config-known && AppState.interactive;
                     toggled => { AppState.command(52, AppState.automation-enabled ? 0 : 1, 0); }
@@ -40,29 +42,29 @@ export component AutomationPage inherits Rectangle {
 
             SettingsCard {
                 glyph: "shield";
-                title: "人工控制优先权";
-                card-height: 58px;
+                title: "手动设置优先";
+                subtitle: "你手动改动某项设置后，自动规则会暂时让位";
+                card-height: 60px;
 
                 Chip {
                     text: AppState.override-policy;
                     level: 0;
                 }
                 Chip {
-                    text: "占用 " + AppState.override-count + " 项";
+                    text: "已锁定 " + AppState.override-count + " 项";
                     level: AppState.override-count > 0 ? 1 : 0;
                 }
                 FluentButton {
-                    text: "释放占用";
+                    text: "恢复自动";
                     variant: 0;
                     compact: true;
-                    width: 96px;
+                    width: 88px;
                     enabled: AppState.override-count > 0 && AppState.interactive;
                     clicked => { AppState.command(55, 0, 0); }
                 }
             }
         }
 
-        // ── Group 2: Quick Presets & Dry-Run ────────────────────────────────
         SettingsGroup {
             title: "快捷添加";
             hint: AppState.automation-summary;
@@ -77,39 +79,25 @@ export component AutomationPage inherits Rectangle {
                     padding: 14px;
                     spacing: 10px;
 
-                    HorizontalLayout {
+                    if root.wide-presets : HorizontalLayout {
                         spacing: 8px;
-                        FluentButton {
-                            text: "拔电静音 + 60Hz";
-                            glyph: "plus";
-                            variant: 0;
-                            horizontal-stretch: 1;
-                            enabled: AppState.interactive;
-                            clicked => { AppState.command(53, 0, 0); }
+                        FluentButton { text: "拔电静音 + 60Hz"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 0, 0); } }
+                        FluentButton { text: "插电平衡 + 240Hz"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 1, 0); } }
+                        FluentButton { text: "低电量超级省电"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 2, 0); } }
+                        FluentButton { text: "锁屏熄灭键盘灯"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 3, 0); } }
+                    }
+
+                    if !root.wide-presets : VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            FluentButton { text: "拔电静音 + 60Hz"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 0, 0); } }
+                            FluentButton { text: "插电平衡 + 240Hz"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 1, 0); } }
                         }
-                        FluentButton {
-                            text: "插电平衡 + 240Hz";
-                            glyph: "plus";
-                            variant: 0;
-                            horizontal-stretch: 1;
-                            enabled: AppState.interactive;
-                            clicked => { AppState.command(53, 1, 0); }
-                        }
-                        FluentButton {
-                            text: "低电量超级省电";
-                            glyph: "plus";
-                            variant: 0;
-                            horizontal-stretch: 1;
-                            enabled: AppState.interactive;
-                            clicked => { AppState.command(53, 2, 0); }
-                        }
-                        FluentButton {
-                            text: "锁屏熄灭键盘灯";
-                            glyph: "plus";
-                            variant: 0;
-                            horizontal-stretch: 1;
-                            enabled: AppState.interactive;
-                            clicked => { AppState.command(53, 3, 0); }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            FluentButton { text: "低电量超级省电"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 2, 0); } }
+                            FluentButton { text: "锁屏熄灭键盘灯"; glyph: "plus"; variant: 0; horizontal-stretch: 1; enabled: AppState.interactive; clicked => { AppState.command(53, 3, 0); } }
                         }
                     }
 
@@ -124,11 +112,11 @@ export component AutomationPage inherits Rectangle {
                             overflow: elide;
                         }
                         FluentButton {
-                            text: "试跑诊断";
+                            text: "模拟测试";
                             glyph: "play";
                             variant: 0;
                             compact: true;
-                            width: 96px;
+                            width: 92px;
                             enabled: AppState.interactive && AppState.auto-rules.length > 0;
                             clicked => { AppState.command(51, 0, 0); }
                         }
@@ -137,17 +125,16 @@ export component AutomationPage inherits Rectangle {
             }
         }
 
-        // ── Group 3: Active Rules Stack ─────────────────────────────────────
         SettingsGroup {
-            title: "当前规则列表（" + AppState.auto-rules.length + " 条）";
+            title: "当前规则（" + AppState.auto-rules.length + " 条）";
 
             if AppState.auto-rules.length == 0 : InfoBar {
                 level: 0;
-                text: "尚未添加自动化规则。可点击上方快捷模板一键创建，或编辑 %LOCALAPPDATA%\\MSI-Toolkit\\automation.toml。";
+                text: "尚未添加规则，点击上方常用模板即可一键创建。";
             }
 
             for i in AppState.auto-rules.length : Rectangle {
-                min-height: 66px;
+                min-height: 64px;
                 background: Theme.card;
                 border-radius: Theme.radius-card;
                 border-width: 1px;
@@ -184,13 +171,6 @@ export component AutomationPage inherits Rectangle {
                                 vertical-alignment: center;
                                 overflow: elide;
                             }
-                            VerticalLayout {
-                                alignment: center;
-                                Chip {
-                                    text: "P" + AppState.auto-rules[i].priority;
-                                    level: 0;
-                                }
-                            }
                             if AppState.auto-rules[i].diagnostic != "" : VerticalLayout {
                                 alignment: center;
                                 Chip {
@@ -211,7 +191,7 @@ export component AutomationPage inherits Rectangle {
 
                     VerticalLayout {
                         alignment: center;
-                        Switch {
+                        FluentToggle {
                             checked: AppState.auto-rules[i].enabled;
                             enabled: AppState.interactive;
                             toggled => {

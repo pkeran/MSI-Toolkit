@@ -1,5 +1,6 @@
-// Refined Win11 Fluent segmented selector: inset track + elevated active thumb
-// with subtle 1px top specular bevel (replaces clunky checkable button rows).
+// Silky Win11 Fluent segmented selector with resize-immune sliding active thumb.
+// Animates `anim-idx` (float index) instead of pixel `x`, so switching options
+// glides smoothly while window resizing tracks with zero rubber-band lag.
 
 import { Theme } from "../theme.slint";
 
@@ -17,69 +18,97 @@ export component FluentSegmentBar inherits Rectangle {
     border-radius: Theme.radius;
     border-width: 1px;
     border-color: Theme.card-stroke;
+    clip: true;
 
-    HorizontalLayout {
-        padding: 3px;
-        spacing: 2px;
+    pure function find-active() -> int {
+        if root.labels.length > 0 && 0 < root.values.length && root.values[0] == root.current { return 0; }
+        if root.labels.length > 1 && 1 < root.values.length && root.values[1] == root.current { return 1; }
+        if root.labels.length > 2 && 2 < root.values.length && root.values[2] == root.current { return 2; }
+        if root.labels.length > 3 && 3 < root.values.length && root.values[3] == root.current { return 3; }
+        if root.labels.length > 4 && 4 < root.values.length && root.values[4] == root.current { return 4; }
+        return -1;
+    }
 
-        for i in labels.length : Rectangle {
-            property <bool> is-active: i < root.values.length && root.values[i] == root.current;
-            horizontal-stretch: 1;
-            border-radius: Theme.radius-sm;
-            border-width: is-active ? 1px : 0px;
-            background: is-active ? Theme.btn-bg
-                      : (seg-ta.has-hover && root.enabled ? Theme.subtle-hover : transparent);
-            border-color: is-active ? Theme.btn-border : transparent;
-            animate background { duration: Theme.dur-hover; easing: ease-out; }
-            clip: true;
+    property <int> count: max(1, root.labels.length);
+    property <int> active-idx: root.find-active();
+    property <float> anim-idx: root.active-idx >= 0 ? root.active-idx : 0.0;
+    animate anim-idx { duration: Theme.dur-segment; easing: cubic-bezier(0.16, 1.0, 0.3, 1.0); }
 
-            if is-active : Rectangle {
-                x: 1px;
-                y: 1px;
-                width: max(0px, parent.width - 2px);
-                height: 1px;
-                background: Theme.btn-bevel-top;
-            }
+    property <length> inner-w: max(0px, root.width - 6px);
+    property <length> slot-w: root.inner-w / root.count;
 
-            if is-active : Rectangle {
-                x: 1px;
-                y: max(0px, parent.height - 2px);
-                width: max(0px, parent.width - 2px);
-                height: 1px;
-                background: Theme.btn-bevel-bottom;
-            }
+    // Single smooth-gliding active thumb behind labels
+    if root.active-idx >= 0 : Rectangle {
+        x: 3px + root.anim-idx * root.slot-w;
+        y: 3px;
+        width: max(0px, root.slot-w);
+        height: max(0px, root.height - 6px);
+        border-radius: Theme.radius-sm;
+        background: Theme.btn-bg;
+        border-width: 1px;
+        border-color: Theme.btn-border;
+        clip: true;
 
-            // Subtle accent underline on active segment
-            if is-active && root.enabled : Rectangle {
-                x: (parent.width - min(20px, max(10px, parent.width * 0.36))) / 2;
-                y: parent.height - 2.5px;
-                width: min(20px, max(10px, parent.width * 0.36));
-                height: 2px;
-                border-radius: 1px;
-                background: Theme.accent;
-            }
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: max(0px, parent.width - 2px);
+            height: 1px;
+            background: Theme.btn-bevel-top;
+        }
+        Rectangle {
+            x: 1px;
+            y: max(0px, parent.height - 2px);
+            width: max(0px, parent.width - 2px);
+            height: 1px;
+            background: Theme.btn-bevel-bottom;
+        }
+        if root.enabled : Rectangle {
+            x: (parent.width - min(22px, max(10px, parent.width * 0.34))) / 2;
+            y: parent.height - 2.5px;
+            width: min(22px, max(10px, parent.width * 0.34));
+            height: 2px;
+            border-radius: 1px;
+            background: Theme.accent;
+        }
+    }
 
-            seg-ta := TouchArea {
-                enabled: root.enabled;
-                mouse-cursor: pointer;
-                clicked => {
-                    if i < root.values.length {
-                        root.picked(root.values[i]);
-                    }
+    // Equal-width interactive cells aligned mathematically 1:1 with the sliding thumb.
+    for i in labels.length : Rectangle {
+        property <bool> is-active: i == root.active-idx;
+        x: 3px + i * root.slot-w;
+        y: 3px;
+        width: max(0px, root.slot-w);
+        height: max(0px, root.height - 6px);
+        border-radius: Theme.radius-sm;
+        background: !is-active && seg-ta.has-hover && root.enabled
+            ? (seg-ta.pressed ? Theme.subtle-pressed : Theme.subtle-hover)
+            : transparent;
+
+        seg-ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => {
+                if i < root.values.length {
+                    root.picked(root.values[i]);
                 }
             }
+        }
 
-            Text {
-                text: root.labels[i];
-                font-size: Theme.font-caption;
-                font-weight: is-active ? 600 : 400;
-                color: !root.enabled ? Theme.text-disabled
-                     : is-active ? Theme.text
-                     : Theme.text-2;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-            }
+        Text {
+            x: 2px;
+            y: 0px;
+            width: max(0px, parent.width - 4px);
+            height: parent.height;
+            text: root.labels[i];
+            font-size: Theme.font-caption;
+            font-weight: is-active ? 600 : 400;
+            color: !root.enabled ? Theme.text-disabled
+                 : is-active ? Theme.text
+                 : Theme.text-2;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 }

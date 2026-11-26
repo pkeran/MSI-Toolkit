@@ -113,7 +113,7 @@ impl Tray {
         let cooler = snapshot.hardware.cooler_boost;
         menu.item(
             COOLER,
-            "强冷模式 (Cooler Boost)",
+            "强冷散热",
             cooler.is_some() && snapshot.writable.contains(CapabilityFlags::COOLER_BOOST),
             cooler == Some(true),
         )?;

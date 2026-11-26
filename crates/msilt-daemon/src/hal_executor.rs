@@ -140,7 +140,11 @@ impl HalBackends {
             return Applied::failure(error, Some(before));
         }
         let original = observed(&before.report.state, change.target());
-        if original.as_ref() == Some(change) {
+        // Keyboard HID has no hardware readback; always transmit explicit lighting frames
+        // so re-applying after a Fn hotkey or external reset actually updates the LEDs.
+        if !matches!(change, ControlChange::SetKeyboardLighting { .. })
+            && original.as_ref() == Some(change)
+        {
             if !permit() {
                 return Applied::failure(ErrorCode::NotReady, Some(before));
             }

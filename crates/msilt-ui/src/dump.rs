@@ -34,10 +34,17 @@ pub fn render(window: &MinimalSoftwareWindow, width: u32, height: u32) -> Result
 }
 
 pub fn save(path: &Path, pixels: &SharedPixelBuffer<Rgba8Pixel>) -> io::Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    write_png(&mut file, pixels.width(), pixels.height(), pixels.as_bytes())?;
-    file.flush()
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // Readers may open the final path as soon as it appears.
+    let mut staging = tempfile::NamedTempFile::new_in(parent)?;
+    {
+        let mut file = io::BufWriter::new(staging.as_file_mut());
+        write_png(&mut file, pixels.width(), pixels.height(), pixels.as_bytes())?;
+        file.flush()?;
+    }
+    staging.persist(path)?;
+    Ok(())
 }
 
 fn write_png(out: &mut impl Write, width: u32, height: u32, rgba: &[u8]) -> io::Result<()> {
@@ -93,5 +100,33 @@ mod tests {
     #[test]
     fn png_rejects_inconsistent_pixel_counts() {
         assert!(write_png(&mut Vec::new(), 2, 1, &[0; 4]).is_err());
+    }
+
+    #[test]
+    fn failed_export_preserves_the_previous_png_and_leaves_no_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let mut valid = Vec::new();
+        write_png(&mut valid, 1, 1, &[12, 34, 56, 255]).unwrap();
+        std::fs::write(&path, &valid).unwrap();
+        let empty = SharedPixelBuffer::<Rgba8Pixel>::new(0, 0);
+        assert!(save(&path, &empty).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), valid);
+        assert!(save(&dir.path().join("new.png"), &empty).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn successful_export_publishes_the_complete_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("shot.png");
+        let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(1, 1);
+        for value in [42, 84] {
+            pixels.make_mut_bytes().copy_from_slice(&[value, 34, 56, 255]);
+            let mut expected = Vec::new();
+            write_png(&mut expected, 1, 1, pixels.as_bytes()).unwrap();
+            save(&path, &pixels).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), expected);
+        }
     }
 }
