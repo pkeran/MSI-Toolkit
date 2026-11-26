@@ -251,10 +251,40 @@ pub fn check_latest(current_version: &str) -> CheckOutcome {
         Ok((404, _)) => CheckOutcome::NoReleaseYet {
             current: current_version.to_string(),
         },
-        Ok((403, _)) => CheckOutcome::Failed("GitHub API 访问受限，请稍后重试".into()),
+        Ok((403 | 429, _)) => {
+            let url = format!("{RELEASES_PAGE_URL}/latest/download/{CHECKSUM_ASSET}");
+            match http_get_https(&url, MAX_META_BYTES, false, |_, _| {}) {
+                Ok((200, sums)) => parse_release_checksums(current_version, &sums),
+                Ok((status, _)) => CheckOutcome::Failed(format!("无法读取公开发行版校验清单（HTTP {status}）")),
+                Err(err) => CheckOutcome::Failed(err),
+            }
+        }
         Ok((status, _)) => CheckOutcome::Failed(format!("GitHub 返回异常状态码 HTTP {status}")),
         Err(err) => CheckOutcome::Failed(err),
     }
+}
+
+fn parse_release_checksums(current: &str, body: &[u8]) -> CheckOutcome {
+    let text = std::str::from_utf8(body).unwrap_or_default();
+    let tag = text.lines().next().and_then(|s| s.strip_prefix("# MSI-Toolkit ")).unwrap_or_default();
+    let Some((major, minor, patch)) = parse_semver(tag) else {
+        return CheckOutcome::Failed("发行版校验清单缺少版本号".into());
+    };
+    let version = format!("{major}.{minor}.{patch}");
+    if tag != format!("v{version}") || parse_sha256_for_asset(text, SETUP_ASSET).is_none() {
+        return CheckOutcome::Failed("发行版校验清单无效".into());
+    }
+    if !is_newer(&version, current) {
+        return CheckOutcome::UpToDate { current: current.into(), latest: version };
+    }
+    // Pin both downloads to this tag; latest may change between check and install.
+    let base = format!("{RELEASES_PAGE_URL}/download/{tag}");
+    CheckOutcome::Available(ReleaseInfo {
+        tag: tag.into(), version, html_url: format!("{RELEASES_PAGE_URL}/tag/{tag}"),
+        asset_name: SETUP_ASSET.into(), asset_url: format!("{base}/{SETUP_ASSET}"),
+        asset_kind: AssetKind::SetupExe, sha256_url: format!("{base}/{CHECKSUM_ASSET}"),
+        published_at: String::new(), notes_summary: String::new(),
+    })
 }
 
 pub fn download_and_launch_update(
@@ -931,6 +961,20 @@ mod tests {
         assert!(is_newer("v0.1.1", "0.1.0"));
         assert!(!is_newer("v0.1.0", "0.1.0"));
         assert!(!is_newer("v0.0.9", "0.1.0"));
+    }
+
+    #[test]
+    fn public_checksums_pin_a_stable_release_when_the_api_is_limited() {
+        let digest = "0".repeat(64);
+        let sums = format!("# MSI-Toolkit v0.1.1\n{digest}  {SETUP_ASSET}\n");
+        let CheckOutcome::Available(info) = parse_release_checksums("0.1.0", sums.as_bytes()) else { panic!("missing update") };
+        assert_eq!(info.asset_url, format!("{RELEASES_PAGE_URL}/download/v0.1.1/{SETUP_ASSET}"));
+        assert_eq!(info.sha256_url, format!("{RELEASES_PAGE_URL}/download/v0.1.1/{CHECKSUM_ASSET}"));
+        assert!(matches!(parse_release_checksums("0.1.1", sums.as_bytes()), CheckOutcome::UpToDate { .. }));
+        for bad in [sums.replace("v0.1.1", "v0.1.1-rc1"), sums.replace("v0.1.1", "v0.1.1/../"),
+                    sums.replace(&digest, "invalid"), sums.lines().skip(1).collect::<String>()] {
+            assert!(matches!(parse_release_checksums("0.1.0", bad.as_bytes()), CheckOutcome::Failed(_)));
+        }
     }
 
     #[test]

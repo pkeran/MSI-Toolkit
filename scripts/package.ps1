@@ -66,7 +66,9 @@ MSI-Toolkit (Windows 11 Native Release Bundle)
     $setupHash = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $zipHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($SumPath, "$setupHash  MSI-Toolkit-Setup.exe`n$zipHash  MSI-Toolkit-win64.zip`n", $utf8NoBom)
+    $version = (Get-Item -LiteralPath (Join-Path $DistDir 'msilt-ui.exe')).VersionInfo.ProductVersion
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Missing release version in msilt-ui.exe' }
+    [System.IO.File]::WriteAllText($SumPath, "# MSI-Toolkit v$version`n$setupHash  MSI-Toolkit-Setup.exe`n$zipHash  MSI-Toolkit-win64.zip`n", $utf8NoBom)
 
     $setupBytes = (Get-Item -LiteralPath $SetupPath).Length
     $zipBytes = (Get-Item -LiteralPath $ZipPath).Length

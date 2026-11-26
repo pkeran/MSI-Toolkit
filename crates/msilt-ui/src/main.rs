@@ -1369,7 +1369,7 @@ fn run(options: Options) -> ExitCode {
     {
         let state = ui.global::<AppState>();
         state.set_ui_version(env!("CARGO_PKG_VERSION").into());
-        state.set_daemon_version("0.1.0".into());
+        state.set_daemon_version(env!("CARGO_PKG_VERSION").into());
         state.set_page(options.page);
         state.set_keyboard_conflict(false);
         state.set_keyboard_layout("24 区 Per-Zone RGB".into());
