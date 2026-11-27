@@ -137,40 +137,6 @@ export component AppWindow inherits Window {
                             tint: toggle-ta.has-hover ? Theme.text : Theme.text-2;
                         }
                     }
-
-                    // Unified MSI-Toolkit Red/White Shield emblem + wordmark (fades smoothly on collapse)
-                    Rectangle {
-                        x: root.collapsed ? 42px : 48px;
-                        y: 0px;
-                        width: 128px;
-                        height: parent.height;
-                        background: transparent;
-                        opacity: root.collapsed ? 0.0 : 1.0;
-                        animate x { duration: Theme.reduced-motion ? 0ms : 165ms; easing: cubic-bezier(0.22, 1.0, 0.36, 1.0); }
-                        animate opacity { duration: Theme.reduced-motion ? 0ms : 120ms; easing: ease-out; }
-
-                        Image {
-                            x: 0px;
-                            y: (parent.height - self.height) / 2;
-                            width: 18px;
-                            height: 18px;
-                            source: @image-url("assets/brand_icon.svg");
-                            image-fit: contain;
-                        }
-
-                        Text {
-                            x: 24px;
-                            y: 0px;
-                            width: 102px;
-                            height: parent.height;
-                            text: "MSI-Toolkit";
-                            font-size: Theme.font-caption;
-                            font-weight: 600;
-                            color: Theme.text;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                    }
                 }
 
                 Rectangle { horizontal-stretch: 1; background: transparent; }
