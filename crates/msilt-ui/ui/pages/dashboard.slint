@@ -1,5 +1,7 @@
-// Page 0: Dashboard — responsive quick controls + whole-machine status grid
-// (CPU / GPU / Memory & Power / Display & Policy) + temperature trend card.
+// Page 0: Dashboard — Lenovo Legion Toolkit (LLT) inspired cockpit:
+//   1. Top live hardware sensors (3 independent cards: CPU | GPU | RAM, zero mixed domains)
+//   2. Middle categorized dual-column controls (电源与散热 | 显示与外设)
+//   3. Bottom live CPU/GPU thermal trend chart (zero duplicate footer strip)
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
@@ -9,10 +11,104 @@ import { FluentButton } from "../components/fluent_button.slint";
 import { FluentToggle } from "../components/fluent_toggle.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { Sparkline } from "../components/sparkline.slint";
+import { Chip } from "../components/primitives.slint";
 import { Icon } from "../icons.slint";
 
-component BrightnessControlCard inherits Rectangle {
-    height: 66px;
+component SensorCard inherits Rectangle {
+    in property <string> glyph: "pulse";
+    in property <string> title: "";
+    in property <string> badge: "";
+    in property <string> headline: "—";
+    in property <string> detail: "";
+    in property <float> ratio: -1.0;
+    in property <color> bar-color: Theme.accent;
+
+    height: 86px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 11px;
+        padding-bottom: 11px;
+        spacing: 6px;
+
+        // Top row: domain icon + title + right-aligned secondary badge
+        HorizontalLayout {
+            height: 18px;
+            spacing: 7px;
+
+            VerticalLayout {
+                alignment: center;
+                Icon { glyph: root.glyph; size: 15px; tint: root.bar-color; }
+            }
+            Text {
+                text: root.title;
+                font-size: Theme.font-caption;
+                font-weight: 500;
+                color: Theme.text-2;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if root.badge != "" : Text {
+                text: root.badge;
+                font-size: Theme.font-caption;
+                font-family: Theme.font-mono;
+                color: Theme.text-2;
+                vertical-alignment: center;
+            }
+        }
+
+        // Primary tabular KPI headline
+        Text {
+            text: root.headline;
+            font-size: 16px;
+            font-weight: 600;
+            font-family: Theme.font-mono;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        // Subtle 3px flat progress indicator (Legion Toolkit SensorsControl style)
+        Rectangle {
+            height: 3px;
+            border-radius: 1.5px;
+            background: Theme.segment-track;
+            clip: true;
+
+            if root.ratio >= 0.0 : Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width * clamp(root.ratio, 0.0, 1.0);
+                height: parent.height;
+                border-radius: 1.5px;
+                background: root.bar-color;
+            }
+        }
+
+        // Compact hardware sub-metrics
+        Text {
+            text: root.detail;
+            font-size: Theme.font-micro;
+            font-family: Theme.font-mono;
+            color: Theme.text-3;
+            overflow: elide;
+        }
+    }
+}
+
+component BrightnessRowCard inherits Rectangle {
+    height: 60px;
+    min-width: 0px;
+    preferred-width: 0px;
     horizontal-stretch: 1;
     background: transparent;
 
@@ -21,6 +117,7 @@ component BrightnessControlCard inherits Rectangle {
     property <int> shown: root.dragging ? root.draft : AppState.brightness;
 
     CompactCard {
+        height: 60px;
         glyph: "lighting";
         title: "屏幕亮度";
         subtitle: Fmt.pct(root.shown);
@@ -45,338 +142,319 @@ component BrightnessControlCard inherits Rectangle {
     }
 }
 
-component DashboardControl inherits Rectangle {
-    in property <int> kind;
-    height: 66px;
-    horizontal-stretch: 1;
-
-    if kind == 0 : CompactCard {
-        glyph: "gauge";
-        title: "性能模式";
-        ComboBox {
-            width: 124px;
-            model: AppState.mode-labels;
-            current-index: AppState.mode-choice;
-            enabled: AppState.cap-performance && AppState.interactive;
-            selected(_) => { AppState.command(20, self.current-index, 0); }
-        }
-    }
-    if kind == 1 : CompactCard {
-        glyph: "pulse";
-        title: "强冷散热";
-        subtitle: AppState.cooler-boost-known ? (AppState.cooler-boost ? "风扇全速运行中" : "风扇全速运转") : "—";
-        accent-border: AppState.cooler-boost ? Theme.warn : transparent;
-        FluentToggle {
-            checked: AppState.cooler-boost;
-            enabled: AppState.cap-cooler && AppState.cooler-boost-known && AppState.interactive;
-            toggled => { AppState.command(21, AppState.cooler-boost ? 0 : 1, 0); }
-        }
-    }
-    if kind == 2 : CompactCard {
-        glyph: "battery";
-        title: "充电上限";
-        ComboBox {
-            width: 124px;
-            model: AppState.charge-labels;
-            current-index: AppState.charge-choice;
-            enabled: AppState.cap-charge && AppState.interactive;
-            selected(_) => { AppState.command(22, self.current-index, 0); }
-        }
-    }
-    if kind == 3 : CompactCard {
-        glyph: "display";
-        title: "刷新率";
-        ComboBox {
-            width: 124px;
-            model: AppState.refresh-labels;
-            current-index: AppState.refresh-choice;
-            enabled: AppState.cap-refresh && AppState.interactive;
-            selected(_) => { AppState.command(23, self.current-index, 0); }
-        }
-    }
-    if kind == 4 : BrightnessControlCard { }
-    if kind == 5 : CompactCard {
-        glyph: "keyboard";
-        title: "键盘灯效";
-        subtitle: AppState.keyboard-conflict
-            ? "被 MSI 软件占用"
-            : ("24 区 · " + Fmt.effect-name(AppState.zone-effect));
-        accent-border: AppState.keyboard-conflict ? Theme.danger : transparent;
-        FluentButton {
-            text: "编辑";
-            variant: 0;
-            width: 88px;
-            clicked => { AppState.command(10, 4, 0); }
-        }
-    }
-}
-
-component SystemStatusTile inherits Rectangle {
-    in property <string> glyph: "pulse";
-    in property <string> label: "";
-    in property <string> primary: "—";
-    in property <string> secondary: "";
-    in property <color> accent: Theme.text-2;
-
-    height: 62px;
+component PowerCoolingColumn inherits SettingsGroup {
+    title: "电源与散热";
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    background: Theme.card;
-    border-radius: Theme.radius-card;
-    border-width: 1px;
-    border-color: Theme.card-stroke;
 
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 12px;
+    pure function fan-policy() -> string {
+        return AppState.cooler-boost ? "强冷全速"
+             : AppState.fan-mode == 2 ? "自定义曲线"
+             : AppState.fan-mode == 1 ? "静音风扇"
+             : AppState.fan-mode == 0 ? "自动风扇" : "风扇策略";
+    }
 
-        VerticalLayout {
-            alignment: center;
-            Icon { glyph: root.glyph; size: 17px; tint: root.accent; }
+    pure function battery-summary() -> string {
+        return (AppState.power-source == 0 ? "已接交流电" : AppState.power-source == 1 ? "使用电池" : "供电未知")
+            + " · " + Fmt.pct(AppState.battery-percent)
+            + (AppState.battery-rate != "—" ? (" · " + AppState.battery-rate) : "");
+    }
+
+    VerticalLayout {
+        spacing: Theme.gap-card;
+
+        CompactCard {
+            height: 60px;
+            glyph: "gauge";
+            title: "性能模式";
+            subtitle: root.fan-policy()
+                + (AppState.gpu-oc-active
+                    ? (" · 偏移 " + Fmt.offset-mhz(AppState.gpu-oc-core) + "/" + Fmt.offset-mhz(AppState.gpu-oc-mem))
+                    : "");
+            ComboBox {
+                width: 124px;
+                model: AppState.mode-labels;
+                current-index: AppState.mode-choice;
+                enabled: AppState.cap-performance && AppState.interactive;
+                selected(_) => { AppState.command(20, self.current-index, 0); }
+            }
         }
 
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            spacing: 2px;
-
-            HorizontalLayout {
-                spacing: 8px;
-                Text {
-                    text: root.label;
-                    font-size: Theme.font-caption;
-                    color: Theme.text-2;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: root.primary;
-                    font-size: Theme.font-body;
-                    font-weight: 600;
-                    font-family: Theme.font-mono;
-                    color: Theme.text;
-                    vertical-alignment: center;
-                }
+        CompactCard {
+            height: 60px;
+            glyph: "pulse";
+            title: "强冷散热";
+            subtitle: AppState.cooler-boost-known
+                ? (AppState.cooler-boost ? "风扇全速运行中" : "双风扇全速排热")
+                : "—";
+            accent-border: AppState.cooler-boost ? Theme.warn : transparent;
+            FluentToggle {
+                checked: AppState.cooler-boost;
+                enabled: AppState.cap-cooler && AppState.cooler-boost-known && AppState.interactive;
+                toggled => { AppState.command(21, AppState.cooler-boost ? 0 : 1, 0); }
             }
+        }
 
-            Text {
-                text: root.secondary;
-                font-size: Theme.font-caption;
-                font-family: Theme.font-mono;
-                color: Theme.text-3;
-                overflow: elide;
+        CompactCard {
+            height: 60px;
+            glyph: "battery";
+            title: "电池与充电上限";
+            subtitle: root.battery-summary();
+            ComboBox {
+                width: 124px;
+                model: AppState.charge-labels;
+                current-index: AppState.charge-choice;
+                enabled: AppState.cap-charge && AppState.interactive;
+                selected(_) => { AppState.command(22, self.current-index, 0); }
             }
         }
     }
 }
 
-component TelemetryCell inherits Rectangle {
-    in property <string> label: "";
-    in property <string> value: "—";
+component DisplayPeripheralsColumn inherits SettingsGroup {
+    title: "显示与外设";
+    min-width: 0px;
+    preferred-width: 0px;
     horizontal-stretch: 1;
-    background: transparent;
 
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 8px;
-        Text {
-            text: root.label;
-            font-size: Theme.font-caption;
-            color: Theme.text-2;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+    VerticalLayout {
+        spacing: Theme.gap-card;
+
+        CompactCard {
+            height: 60px;
+            glyph: "display";
+            title: "屏幕刷新率";
+            subtitle: Fmt.mux-name(AppState.mux-current);
+            ComboBox {
+                width: 124px;
+                model: AppState.refresh-labels;
+                current-index: AppState.refresh-choice;
+                enabled: AppState.cap-refresh && AppState.interactive;
+                selected(_) => { AppState.command(23, self.current-index, 0); }
+            }
         }
-        Text {
-            text: root.value;
-            font-size: Theme.font-body;
-            font-weight: 500;
-            font-family: Theme.font-mono;
-            color: Theme.text;
-            vertical-alignment: center;
+
+        BrightnessRowCard { }
+
+        CompactCard {
+            height: 60px;
+            glyph: "keyboard";
+            title: "键盘灯效";
+            subtitle: AppState.keyboard-conflict
+                ? "被 MSI 软件占用"
+                : ("24 区 · " + Fmt.effect-name(AppState.zone-effect));
+            accent-border: AppState.keyboard-conflict ? Theme.danger : transparent;
+            FluentButton {
+                text: "编辑";
+                variant: 0;
+                width: 84px;
+                clicked => { AppState.command(10, 4, 0); }
+            }
         }
     }
 }
 
 export component DashboardPage inherits Rectangle {
     in property <length> viewport-h: 560px;
-    property <int> columns: root.width >= 820px ? 3 : 2;
-    property <int> rows: 6 / columns;
-    property <length> chart-h: clamp(root.viewport-h - (root.columns == 3 ? 404px : 478px), 138px, 236px);
+    property <bool> wide-sensors: root.width >= 760px;
+    property <bool> wide-controls: root.width >= 760px;
+    property <length> chart-h: clamp(root.viewport-h - (root.wide-controls ? 426px : 596px), 132px, 184px);
 
-    pure function mem-pct() -> string {
-        if AppState.mem-used-mb < 0 || AppState.mem-total-mb <= 0 { return ""; }
-        return " (" + Math.round(AppState.mem-used-mb * 100.0 / AppState.mem-total-mb) + "%)";
+    pure function mem-ratio() -> float {
+        if AppState.mem-used-mb < 0 || AppState.mem-total-mb <= 0 { return -1.0; }
+        return (AppState.mem-used-mb * 1.0) / (AppState.mem-total-mb * 1.0);
     }
 
-    pure function gpu-subline() -> string {
+    pure function mem-pct-text() -> string {
+        if AppState.mem-used-mb < 0 || AppState.mem-total-mb <= 0 { return ""; }
+        return "" + Math.round(AppState.mem-used-mb * 100.0 / AppState.mem-total-mb) + "%";
+    }
+
+    pure function gpu-ratio() -> float {
+        if AppState.gpu-power-mw >= 0 && AppState.gpu-power-limit-mw > 0 {
+            return (AppState.gpu-power-mw * 1.0) / (AppState.gpu-power-limit-mw * 1.0);
+        }
+        if AppState.gpu-util >= 0 {
+            return AppState.gpu-util / 100.0;
+        }
+        return -1.0;
+    }
+
+    pure function gpu-detail() -> string {
         if AppState.gpu-clock-mhz >= 0 && AppState.gpu-vram-total-mb > 0 {
-            return "占用 " + Fmt.pct(AppState.gpu-util) + " · " + Fmt.mhz(AppState.gpu-clock-mhz)
-                 + " · 显存 " + Fmt.gb-pair(AppState.gpu-vram-used-mb, AppState.gpu-vram-total-mb);
+            return Fmt.mhz(AppState.gpu-clock-mhz)
+                + " · 显存 " + Fmt.gb-pair(AppState.gpu-vram-used-mb, AppState.gpu-vram-total-mb)
+                + (AppState.gpu-rpm >= 0 ? (" · " + Fmt.rpm(AppState.gpu-rpm)) : "");
         }
         if AppState.gpu-rpm >= 0 {
             return "风扇 " + Fmt.rpm(AppState.gpu-rpm) + " · 占空比 " + Fmt.pct(AppState.gpu-duty);
         }
-        return "独显处于休眠或等待监控采样";
+        return "独显休眠或等待监控采样";
     }
 
-    pure function policy-subline() -> string {
-        return Fmt.mode-name(AppState.performance-mode)
-            + " · "
-            + (AppState.cooler-boost ? "强冷全速"
-              : AppState.fan-mode == 2 ? "自定义曲线"
-              : AppState.fan-mode == 1 ? "静音风扇"
-              : AppState.fan-mode == 0 ? "自动风扇" : "策略未知")
-            + (AppState.gpu-oc-active
-                ? (" · 偏移 " + Fmt.offset-mhz(AppState.gpu-oc-core) + "/" + Fmt.offset-mhz(AppState.gpu-oc-mem))
-                : "");
+    pure function ram-detail() -> string {
+        if AppState.mem-used-mb < 0 || AppState.mem-total-mb <= 0 {
+            return "等待系统内存采样";
+        }
+        let avail = max(0, AppState.mem-total-mb - AppState.mem-used-mb);
+        return "可用 " + Fmt.gb1(avail) + " · 物理内存";
     }
 
     VerticalLayout {
         alignment: start;
         spacing: 14px;
 
+        // 1. Top Live Hardware Sensors (LLT SensorsControl: CPU | GPU | RAM cleanly separated)
         SettingsGroup {
-            title: "快捷控制";
+            title: "硬件状态";
 
-            VerticalLayout {
+            if root.wide-sensors : HorizontalLayout {
                 spacing: Theme.gap;
-                for r in root.rows : HorizontalLayout {
-                    spacing: Theme.gap;
-                    height: 66px;
-                    for c in root.columns : DashboardControl { kind: r * root.columns + c; }
+                height: 86px;
+
+                SensorCard {
+                    glyph: "gauge";
+                    title: "处理器 CPU";
+                    badge: AppState.cpu-util >= 0 ? ("占用 " + Fmt.pct(AppState.cpu-util)) : "";
+                    headline: Fmt.celsius(AppState.cpu-temp);
+                    ratio: AppState.cpu-util >= 0 ? (AppState.cpu-util / 100.0) : -1.0;
+                    bar-color: Theme.accent;
+                    detail: "风扇 " + Fmt.rpm(AppState.cpu-rpm) + " · 占空比 " + Fmt.pct(AppState.cpu-duty);
+                }
+
+                SensorCard {
+                    glyph: "pulse";
+                    title: "独立显卡 GPU";
+                    badge: AppState.gpu-util >= 0 ? ("占用 " + Fmt.pct(AppState.gpu-util)) : "";
+                    headline: Fmt.celsius(AppState.gpu-temp)
+                        + (AppState.gpu-power-mw >= 0
+                            ? (" · " + Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw))
+                            : "");
+                    ratio: root.gpu-ratio();
+                    bar-color: Theme.warn;
+                    detail: root.gpu-detail();
+                }
+
+                SensorCard {
+                    glyph: "chip";
+                    title: "系统内存 RAM";
+                    badge: root.mem-pct-text();
+                    headline: Fmt.gb-pair(AppState.mem-used-mb, AppState.mem-total-mb);
+                    ratio: root.mem-ratio();
+                    bar-color: Theme.ok;
+                    detail: root.ram-detail();
+                }
+            }
+
+            if !root.wide-sensors : VerticalLayout {
+                spacing: Theme.gap;
+
+                SensorCard {
+                    glyph: "gauge";
+                    title: "处理器 CPU";
+                    badge: AppState.cpu-util >= 0 ? ("占用 " + Fmt.pct(AppState.cpu-util)) : "";
+                    headline: Fmt.celsius(AppState.cpu-temp);
+                    ratio: AppState.cpu-util >= 0 ? (AppState.cpu-util / 100.0) : -1.0;
+                    bar-color: Theme.accent;
+                    detail: "风扇 " + Fmt.rpm(AppState.cpu-rpm) + " · 占空比 " + Fmt.pct(AppState.cpu-duty);
+                }
+
+                SensorCard {
+                    glyph: "pulse";
+                    title: "独立显卡 GPU";
+                    badge: AppState.gpu-util >= 0 ? ("占用 " + Fmt.pct(AppState.gpu-util)) : "";
+                    headline: Fmt.celsius(AppState.gpu-temp)
+                        + (AppState.gpu-power-mw >= 0
+                            ? (" · " + Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw))
+                            : "");
+                    ratio: root.gpu-ratio();
+                    bar-color: Theme.warn;
+                    detail: root.gpu-detail();
+                }
+
+                SensorCard {
+                    glyph: "chip";
+                    title: "系统内存 RAM";
+                    badge: root.mem-pct-text();
+                    headline: Fmt.gb-pair(AppState.mem-used-mb, AppState.mem-total-mb);
+                    ratio: root.mem-ratio();
+                    bar-color: Theme.ok;
+                    detail: root.ram-detail();
                 }
             }
         }
 
-        // Whole-machine live status (flat 2x2 grid, zero nested boxes)
-        SettingsGroup {
-            title: "整机状态";
-
-            VerticalLayout {
-                spacing: Theme.gap;
-
-                HorizontalLayout {
-                    spacing: Theme.gap;
-                    height: 62px;
-
-                    SystemStatusTile {
-                        glyph: "gauge";
-                        label: "处理器 CPU";
-                        accent: Theme.accent;
-                        primary: Fmt.celsius(AppState.cpu-temp)
-                            + (AppState.cpu-util >= 0 ? (" · " + Fmt.pct(AppState.cpu-util)) : "");
-                        secondary: "风扇 " + Fmt.rpm(AppState.cpu-rpm) + " · 占空比 " + Fmt.pct(AppState.cpu-duty);
-                    }
-
-                    SystemStatusTile {
-                        glyph: "pulse";
-                        label: "独立显卡 GPU";
-                        accent: Theme.warn;
-                        primary: Fmt.celsius(AppState.gpu-temp)
-                            + (AppState.gpu-power-mw >= 0 ? (" · " + Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw)) : "");
-                        secondary: root.gpu-subline();
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: Theme.gap;
-                    height: 62px;
-
-                    SystemStatusTile {
-                        glyph: "battery";
-                        label: "内存与供电";
-                        accent: Theme.ok;
-                        primary: Fmt.gb-pair(AppState.mem-used-mb, AppState.mem-total-mb) + root.mem-pct();
-                        secondary: (AppState.power-source == 0 ? "交流电" : AppState.power-source == 1 ? "电池" : "供电未知")
-                            + " · 电量 " + Fmt.pct(AppState.battery-percent)
-                            + (AppState.charge-limit >= 0 ? (" · 上限 " + Fmt.pct(AppState.charge-limit)) : "")
-                            + (AppState.battery-rate != "—" ? (" · " + AppState.battery-rate) : "");
-                    }
-
-                    SystemStatusTile {
-                        glyph: "display";
-                        label: "显示与策略";
-                        accent: Theme.text-2;
-                        primary: Fmt.mux-name(AppState.mux-current) + " · " + Fmt.hz(AppState.refresh-hz);
-                        secondary: root.policy-subline();
-                    }
-                }
-            }
+        // 2. Categorized Control Groups (LLT-style Power & Cooling | Display & Peripherals)
+        if root.wide-controls : HorizontalLayout {
+            spacing: 14px;
+            PowerCoolingColumn { }
+            DisplayPeripheralsColumn { }
+        }
+        if !root.wide-controls : VerticalLayout {
+            spacing: 14px;
+            PowerCoolingColumn { }
+            DisplayPeripheralsColumn { }
         }
 
+        // 3. Clean Thermal Trend (zero redundant bottom fan/power bar)
         VerticalLayout {
             spacing: Theme.gap-group-head;
 
             HorizontalLayout {
-                height: 20px;
-                spacing: 12px;
+                height: 22px;
+                spacing: 10px;
                 Text {
-                    text: "温度与散热概览";
+                    text: "温度趋势";
                     font-size: Theme.font-group;
                     font-weight: 600;
                     color: Theme.text;
                     vertical-alignment: center;
-                    horizontal-stretch: 1;
                 }
+                if AppState.override-count > 0 : VerticalLayout {
+                    alignment: center;
+                    Chip {
+                        text: "手动锁定 " + AppState.override-count + " 项";
+                        level: 0;
+                        glyph: "lock";
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+
                 HorizontalLayout {
-                    horizontal-stretch: 0;
-                    spacing: 6px;
-                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; } }
-                    Text { text: "CPU " + Fmt.celsius(AppState.cpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
-                }
-                HorizontalLayout {
-                    horizontal-stretch: 0;
-                    spacing: 6px;
-                    VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.warn; } }
-                    Text { text: "GPU " + Fmt.celsius(AppState.gpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
-                }
-                Text {
-                    text: "" + AppState.series-len + " 条记录";
-                    font-size: Theme.font-caption;
-                    color: Theme.text-3;
-                    vertical-alignment: center;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 5px;
+                        VerticalLayout { alignment: center; Rectangle { width: 7px; height: 7px; border-radius: 3.5px; background: Theme.accent; } }
+                        Text { text: "CPU " + Fmt.celsius(AppState.cpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        spacing: 5px;
+                        VerticalLayout { alignment: center; Rectangle { width: 7px; height: 7px; border-radius: 3.5px; background: Theme.warn; } }
+                        Text { text: "GPU " + Fmt.celsius(AppState.gpu-temp); font-size: Theme.font-caption; font-family: Theme.font-mono; color: Theme.text-2; vertical-alignment: center; }
+                    }
+                    Text {
+                        text: AppState.series-len > 0 ? ("" + AppState.series-len + " 条记录") : "等待采样";
+                        font-size: Theme.font-caption;
+                        color: Theme.text-3;
+                        vertical-alignment: center;
+                    }
                 }
             }
 
-            VerticalLayout {
-                spacing: Theme.gap-card;
+            Rectangle {
+                background: Theme.card;
+                border-radius: Theme.radius-card;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+                height: root.chart-h + 20px;
 
-                Rectangle {
-                    height: root.chart-h;
-                    background: Theme.card;
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: Theme.card-stroke;
-
-                    VerticalLayout {
-                        padding: 12px;
-                        Sparkline {
-                            vertical-stretch: 1;
-                            cpu-path: AppState.cpu-path;
-                            gpu-path: AppState.gpu-path;
-                        }
-                    }
-                }
-
-                Rectangle {
-                    height: 44px;
-                    background: Theme.card;
-                    border-radius: Theme.radius-card;
-                    border-width: 1px;
-                    border-color: Theme.card-stroke;
-
-                    HorizontalLayout {
-                        spacing: 0px;
-                        TelemetryCell { label: "CPU 风扇"; value: Fmt.rpm(AppState.cpu-rpm); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
-                        TelemetryCell { label: "GPU 风扇"; value: Fmt.rpm(AppState.gpu-rpm); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
-                        TelemetryCell { label: "GPU 功耗"; value: Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
-                        TelemetryCell { label: "手动锁定"; value: "" + AppState.override-count + " 项"; }
+                VerticalLayout {
+                    padding: 10px;
+                    Sparkline {
+                        height: root.chart-h;
+                        cpu-path: AppState.cpu-path;
+                        gpu-path: AppState.gpu-path;
                     }
                 }
             }

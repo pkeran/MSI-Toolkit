@@ -1,8 +1,8 @@
-// Exquisite WinUI 2.8.7 / Blinue Magpie / Linear FluentButton.
+// Flat Win11 Fluent 2 / Magpie button (zero 3D bevels or bottom drop-rims).
 // Variants:
-//   0 = Standard     (elevated control fill + 1px top specular / bottom elevation bevel)
+//   0 = Standard     (flat control surface + crisp hairline border)
 //   1 = Accent       (primary action, high-contrast on-accent text)
-//   2 = Subtle       (borderless transparent -> 83ms subtle hover)
+//   2 = Subtle       (borderless transparent -> subtle hover fill)
 //   3 = Critical     (solid Crimson destructive confirmation action)
 //   4 = DangerSubtle (restrained tinted danger button with hairline crimson border)
 
@@ -38,40 +38,18 @@ export component FluentButton inherits Rectangle {
     border-color: !root.enabled
         ? Theme.card-stroke
         : root.variant == 1
-            ? (ta.pressed ? Theme.accent-pressed : Theme.accent-bevel-bottom)
+            ? (ta.pressed ? Theme.accent-pressed : Theme.accent)
         : root.variant == 3
             ? Theme.critical-pressed
         : root.variant == 4
             ? Theme.danger-btn-border
-        : Theme.btn-border;
+        : (ta.has-hover ? Theme.card-stroke-hover : Theme.btn-border);
 
     animate background { duration: Theme.dur-hover; easing: ease-out; }
     animate border-color { duration: Theme.dur-hover; easing: ease-out; }
 
     accessible-role: button;
     accessible-label: root.text != "" ? root.text : root.glyph;
-
-    // 1px top specular catchlight
-    if root.enabled && root.variant != 2 && root.variant != 4 && !ta.pressed : Rectangle {
-        x: 1px;
-        y: 1px;
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: root.variant == 1 ? Theme.accent-bevel-top
-                  : root.variant == 3 ? rgba(255, 255, 255, 0.14)
-                  : Theme.btn-bevel-top;
-    }
-
-    // 1px bottom elevation rim
-    if root.enabled && root.variant != 2 && root.variant != 4 && !ta.pressed : Rectangle {
-        x: 1px;
-        y: max(0px, parent.height - 2px);
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: root.variant == 1 ? Theme.accent-bevel-bottom
-                  : root.variant == 3 ? rgba(0, 0, 0, 0.18)
-                  : Theme.btn-bevel-bottom;
-    }
 
     ta := TouchArea {
         enabled: root.enabled;

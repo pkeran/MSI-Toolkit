@@ -1,4 +1,4 @@
-// Magpie KeyVisual-inspired keyboard keycap badge (4px corners + subtle 2px rim).
+// Flat Magpie-style keyboard keycap badge (zero 3D bevels or drop rims).
 
 import { Theme } from "../theme.slint";
 
@@ -14,26 +14,9 @@ export component KeyChip inherits Rectangle {
     border-color: Theme.btn-border;
     clip: true;
 
-    Rectangle {
-        x: 1px;
-        y: 1px;
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: Theme.btn-bevel-top;
-    }
-
-    Rectangle {
-        x: 0px;
-        y: parent.height - 2px;
-        width: parent.width;
-        height: 2px;
-        background: Theme.dark ? rgba(0, 0, 0, 0.32) : rgba(0, 0, 0, 0.14);
-    }
-
     key-layout := HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
-        padding-bottom: 1px;
         Text {
             text: root.label;
             font-size: Theme.font-micro;

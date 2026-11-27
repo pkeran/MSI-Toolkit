@@ -80,15 +80,6 @@ component PhysKey inherits Rectangle {
                 : transparent;
     clip: true;
 
-    // Subtle 1px bottom physical lip ONLY (never tints the face color so RGB stays 1:1)
-    Rectangle {
-        x: 0px;
-        y: max(0px, parent.height - 1.5px);
-        width: parent.width;
-        height: 1.5px;
-        background: rgba(0, 0, 0, 0.22);
-    }
-
     // Crisp hover region preview rim across every key belonging to the hovered hardware zone
     if root.is-zone-hover : Rectangle {
         x: 0px;
@@ -386,21 +377,13 @@ export component ZoneMatrix inherits Rectangle {
             }
         }
 
-        // Matte aluminum / graphite physical keyboard chassis
+        // Matte aluminum / graphite physical keyboard chassis (flat, zero bottom drop-lip)
         Rectangle {
             background: Theme.dark ? #26272C : #E3E6EC;
             border-radius: 10px;
-            border-width: 1.5px;
+            border-width: 1px;
             border-color: root.conflict ? Theme.danger : (Theme.dark ? #3A3C44 : #CCD1DB);
             clip: true;
-
-            Rectangle {
-                x: 0px;
-                y: max(0px, parent.height - 4px);
-                width: parent.width;
-                height: 4px;
-                background: Theme.dark ? #1B1C20 : #D1D6DF;
-            }
 
             VerticalLayout {
                 padding-left: 10px;

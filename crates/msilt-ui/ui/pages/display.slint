@@ -18,23 +18,13 @@ component GpuModeCard inherits Rectangle {
     horizontal-stretch: 1;
     height: 70px;
     border-radius: Theme.radius-card;
-    background: root.active ? Theme.card : Theme.card-secondary;
+    background: root.active ? Theme.nav-selected : Theme.card;
     border-width: 1px;
     border-color: root.active ? Theme.stroke-strong : Theme.card-stroke;
     clip: true;
 
-    // Quiet 3px left accent indicator only on the active GPU mode (Win11 NavigationView restraint)
-    if root.active : Rectangle {
-        x: 0px;
-        y: 16px;
-        width: 3px;
-        height: parent.height - 32px;
-        border-radius: 1.5px;
-        background: Theme.accent;
-    }
-
     VerticalLayout {
-        padding-left: 16px;
+        padding-left: 14px;
         padding-right: 14px;
         alignment: center;
         spacing: 4px;

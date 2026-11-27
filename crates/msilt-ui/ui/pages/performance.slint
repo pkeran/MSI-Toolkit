@@ -294,7 +294,7 @@ export component PerformancePage inherits Rectangle {
     horizontal-stretch: 1;
 
     property <bool> wide-top: root.width >= 760px;
-    property <bool> wide-curves: root.width >= 780px;
+    property <bool> wide-curves: root.width >= 840px;
     property <bool> silent-mode: AppState.performance-mode == 1;
     property <bool> show-restore-auto: !AppState.cooler-boost && !root.silent-mode && (AppState.fan-mode == 2 || AppState.current-mode-custom-saved);
     property <length> curve-canvas-h: root.wide-curves

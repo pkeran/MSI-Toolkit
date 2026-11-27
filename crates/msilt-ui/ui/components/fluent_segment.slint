@@ -37,40 +37,15 @@ export component FluentSegmentBar inherits Rectangle {
     property <length> inner-w: max(0px, root.width - 6px);
     property <length> slot-w: root.inner-w / root.count;
 
-    // Single smooth-gliding active thumb behind labels
+    // Flat Magpie-style sliding active fill (zero 3D bevel, zero bottom shadow/bar)
     if root.active-idx >= 0 : Rectangle {
         x: 3px + root.anim-idx * root.slot-w;
         y: 3px;
         width: max(0px, root.slot-w);
         height: max(0px, root.height - 6px);
         border-radius: Theme.radius-sm;
-        background: Theme.btn-bg;
-        border-width: 1px;
-        border-color: Theme.btn-border;
-        clip: true;
-
-        Rectangle {
-            x: 1px;
-            y: 1px;
-            width: max(0px, parent.width - 2px);
-            height: 1px;
-            background: Theme.btn-bevel-top;
-        }
-        Rectangle {
-            x: 1px;
-            y: max(0px, parent.height - 2px);
-            width: max(0px, parent.width - 2px);
-            height: 1px;
-            background: Theme.btn-bevel-bottom;
-        }
-        if root.enabled : Rectangle {
-            x: (parent.width - min(22px, max(10px, parent.width * 0.34))) / 2;
-            y: parent.height - 2.5px;
-            width: min(22px, max(10px, parent.width * 0.34));
-            height: 2px;
-            border-radius: 1px;
-            background: Theme.accent;
-        }
+        background: Theme.segment-selected;
+        border-width: 0px;
     }
 
     // Equal-width interactive cells aligned mathematically 1:1 with the sliding thumb.

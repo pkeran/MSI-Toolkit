@@ -45,32 +45,6 @@ export component Toast inherits Rectangle {
         }
     ]
 
-    // Subtle top specular highlight + bottom depth rim (zero Gaussian blur cost on software renderer)
-    Rectangle {
-        x: 1px;
-        y: 1px;
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: Theme.btn-bevel-top;
-    }
-    Rectangle {
-        x: 1px;
-        y: max(0px, parent.height - 2px);
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: Theme.dark ? rgba(0, 0, 0, 0.35) : rgba(0, 0, 0, 0.08);
-    }
-
-    // Semantic left accent pill
-    Rectangle {
-        x: 4px;
-        y: 8px;
-        width: 3px;
-        height: max(0px, parent.height - 16px);
-        border-radius: 1.5px;
-        background: Theme.severity-color(root.level);
-    }
-
     // Only accept clicks while visible; fully click-through when hidden/fading out
     if root.shown : TouchArea {
         mouse-cursor: pointer;
@@ -78,7 +52,7 @@ export component Toast inherits Rectangle {
     }
 
     toast-row := HorizontalLayout {
-        padding-left: 14px;
+        padding-left: 12px;
         padding-right: 12px;
         padding-top: 6px;
         padding-bottom: 6px;

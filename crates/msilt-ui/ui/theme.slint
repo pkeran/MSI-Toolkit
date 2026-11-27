@@ -47,19 +47,18 @@ export global Theme {
     out property <color> inset: dark ? #1A1A1E : #EFF1F4;
     out property <color> flyout: dark ? #2D2D33 : #FFFFFF;
 
-    // ── L3 Elevated Control Surfaces (Buttons / Segmented / Keycaps) ────────
-    out property <color> btn-bg: dark ? #34343B : #FFFFFF;
-    out property <color> btn-hover: dark ? #3D3D46 : #F8F9FB;
-    out property <color> btn-pressed: dark ? #2C2C32 : #EFF1F5;
+    // ── L3 Flat Control Surfaces (Magpie / Win11 Fluent 2, zero 3D bevels) ──
+    out property <color> btn-bg: dark ? #323239 : #FFFFFF;
+    out property <color> btn-hover: dark ? #3B3B44 : #F7F8FA;
+    out property <color> btn-pressed: dark ? #2B2B31 : #EFF1F5;
     out property <color> btn-disabled: dark ? #29292F : #F3F4F6;
-    out property <color> btn-border: dark ? rgba(255, 255, 255, 0.095) : #D9DCE3;
-    out property <color> btn-bevel-top: dark ? rgba(255, 255, 255, 0.09) : transparent;
-    out property <color> btn-bevel-bottom: dark ? transparent : rgba(0, 0, 0, 0.10);
+    out property <color> btn-border: dark ? rgba(255, 255, 255, 0.095) : #DCDFE6;
 
     out property <color> subtle-hover: dark ? rgba(255, 255, 255, 0.065) : rgba(0, 0, 0, 0.04);
     out property <color> subtle-pressed: dark ? rgba(255, 255, 255, 0.04) : rgba(0, 0, 0, 0.025);
     out property <color> control-hover: subtle-hover;
-    out property <color> segment-track: dark ? #1F1F23 : #EBEDF1;
+    out property <color> segment-track: dark ? rgba(255, 255, 255, 0.04) : rgba(0, 0, 0, 0.045);
+    out property <color> segment-selected: dark ? rgba(255, 255, 255, 0.11) : #FFFFFF;
     out property <color> pill-bg: dark ? #27272C : #FFFFFF;
     out property <color> pill-border: dark ? rgba(255, 255, 255, 0.085) : #DFE2E8;
 
@@ -82,8 +81,6 @@ export global Theme {
     out property <color> accent-hover: dark ? accent-dark.brighter(0.10) : accent-light.brighter(0.12);
     out property <color> accent-pressed: dark ? accent-dark.darker(0.12) : accent-light.darker(0.14);
     out property <color> on-accent: dark ? #0B1219 : #FFFFFF;
-    out property <color> accent-bevel-top: dark ? rgba(255, 255, 255, 0.28) : rgba(255, 255, 255, 0.16);
-    out property <color> accent-bevel-bottom: dark ? rgba(0, 0, 0, 0.22) : rgba(0, 0, 0, 0.24);
     out property <color> accent-surface: dark ? #1E2E3A : #E6F2FC;
     out property <color> accent-surface-strong: dark ? #263B4B : #D4E8F8;
 

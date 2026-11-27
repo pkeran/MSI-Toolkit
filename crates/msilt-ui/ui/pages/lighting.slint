@@ -27,23 +27,8 @@ component PresetChipButton inherits Rectangle {
               : ta.has-hover ? Theme.btn-hover
               : Theme.btn-bg;
     border-width: 1px;
-    border-color: Theme.btn-border;
+    border-color: ta.has-hover ? Theme.card-stroke-hover : Theme.btn-border;
     clip: true;
-
-    if root.enabled && !ta.pressed : Rectangle {
-        x: 1px;
-        y: 1px;
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: Theme.btn-bevel-top;
-    }
-    if root.enabled && !ta.pressed : Rectangle {
-        x: 1px;
-        y: max(0px, parent.height - 2px);
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: Theme.btn-bevel-bottom;
-    }
 
     ta := TouchArea {
         enabled: root.enabled;

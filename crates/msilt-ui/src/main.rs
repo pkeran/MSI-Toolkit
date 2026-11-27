@@ -2001,10 +2001,10 @@ fn check_layout() -> ExitCode {
     println!("  顶栏            40 px（与导航共用 Mica）· 状态胶囊 24 px");
     println!("  左导航          184 px（紧凑 48 px，<1008px 自动收起）· 无边框项高 36 px · 3x16 强调条");
     println!("  内容区          设置页居中 1000px · 工作区居中 1200px · 悬浮 Toast 零位移渐入渐出");
-    println!("  控件体系        FluentButton · FluentSegmentBar 丝滑滑块 · FluentToggle · SettingsExpander");
+    println!("  控件体系        FluentButton · FluentSegmentBar 扁平滑块 · FluentToggle · SettingsExpander");
     println!("  字体            14/13/12 px（Segoe UI Variable）· 数值 Cascadia Mono");
     println!("  页面            8 个（总览/性能与风扇/显卡与显示/电池与电源/键盘灯效/自动化/监控与提示/系统与工具）");
-    println!("  风扇节点        6 × 2 通道，单行 5 节点微调栏，下限 {MAX_DUTY_REF}");
+    println!("  风扇节点        6 × 2 通道，单行 5 节点直输数值 + 步进微调栏，下限 {MAX_DUTY_REF}");
     println!("  键盘矩阵        1:1 实机 99 键 24 区等比键盘（上 11 + 下 13 区 / 多选 / 悬停预览 / 原生动态灯效）+ 2D HSV 色盘");
     println!("  渲染后端        纯 CPU 软件渲染（renderer-software + backend-winit，0 GPU 上下文）");
 
