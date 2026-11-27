@@ -1,9 +1,10 @@
-use std::{io, slice};
+use std::io;
 
 use msilt_core::{CapabilityFlags, ControlChange, PerformanceMode, SystemSnapshot};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
+        System::LibraryLoader::GetModuleHandleW,
         UI::{Shell::*, WindowsAndMessaging::*},
     },
     core::PCWSTR,
@@ -233,25 +234,21 @@ impl Drop for Menu {
 }
 
 fn make_icon() -> io::Result<HICON> {
-    // RT_ICON payload: DIB header, 32-bit XOR pixels, and a 1-bit AND mask.
-    const SIDE: usize = 16;
-    let mut dib = [0u32; 10 + SIDE * SIDE + SIDE];
-    dib[..4].copy_from_slice(&[40, SIDE as u32, (SIDE * 2) as u32, 1 | (32 << 16)]);
-    dib[5] = (SIDE * SIDE * 4) as u32;
-    for y in 0..SIDE {
-        for x in 0..SIDE {
-            let inset = x.min(15 - x) + y.min(15 - y);
-            if inset > 1 {
-                let stroke = (4..12).contains(&x)
-                    && (4..12).contains(&y)
-                    && (x == 4 || x == 11 || x == y || x + y == 15);
-                dib[10 + (15 - y) * SIDE + x] = if stroke { 0xfffb_fafb } else { 0xffa2_1726 };
-            } else {
-                dib[10 + SIDE * SIDE + 15 - y] |= (0x80u32 >> (x % 8)) << (8 * (x / 8));
-            }
-        }
+    // Load the unified MSI-Toolkit icon resource (#1, embedded from assets/msilt.ico)
+    // at exact system small-icon DPI metrics so tray, titlebar, and taskbar match 1:1.
+    unsafe {
+        let module = GetModuleHandleW(None).map_err(os_error)?;
+        let w = GetSystemMetrics(SM_CXSMICON).max(16);
+        let h = GetSystemMetrics(SM_CYSMICON).max(16);
+        let handle = LoadImageW(
+            Some(module.into()),
+            PCWSTR(1usize as *const u16),
+            IMAGE_ICON,
+            w,
+            h,
+            LR_DEFAULTCOLOR,
+        )
+        .map_err(os_error)?;
+        Ok(HICON(handle.0))
     }
-    let bytes = unsafe { slice::from_raw_parts(dib.as_ptr().cast::<u8>(), size_of_val(&dib)) };
-    unsafe { CreateIconFromResourceEx(bytes, true, 0x0003_0000, 16, 16, LR_DEFAULTCOLOR) }
-        .map_err(os_error)
 }

@@ -38,9 +38,24 @@ export component AppWindow inherits Window {
 
     property <[string]> nav-labels: ["总览", "性能与风扇", "显卡与显示", "电池与电源", "键盘灯效", "自动化", "监控与提示", "系统与工具"];
     property <[string]> nav-glyphs: ["dashboard", "gauge", "display", "battery", "keyboard", "bolt", "pulse", "sliders"];
-    // WinUI 3 NavigationView Large breakpoint (1008px); no width animation during resize to avoid full-window layout thrashing.
-    property <bool> collapsed: AppState.nav-collapsed || root.width < 1008px;
+    // WinUI 3 NavigationView Large breakpoint (1008px); auto-syncs on breakpoint crossing while
+    // still allowing manual expand/collapse at any width without dead clicks.
+    property <bool> narrow-win: root.width < 1008px;
+    property <bool> collapsed: AppState.nav-collapsed;
     property <length> nav-width: collapsed ? Theme.nav-w-collapsed : Theme.nav-w;
+    property <int> hovered-nav: -1;
+    animate nav-width {
+        duration: Theme.reduced-motion ? 0ms : 190ms;
+        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
+    }
+    changed narrow-win => {
+        AppState.command(11, root.narrow-win ? 1 : 0, 1);
+    }
+    changed collapsed => {
+        if !root.collapsed {
+            root.hovered-nav = -1;
+        }
+    }
 
     // Mature Win11 Settings / PowerToys reading measures:
     // Settings list pages cap at 1000px; visual workspace pages cap at 1200px (never stretch absurdly on ultrawide).
@@ -89,48 +104,70 @@ export component AppWindow inherits Window {
 
                 Rectangle {
                     width: root.nav-width;
+                    height: parent.height;
                     background: transparent;
                     clip: true;
 
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 8px;
-                        spacing: 8px;
+                    // Sidebar toggle pinned at x=6px (center 24px aligns 1:1 with all nav icons below)
+                    toggle-btn := Rectangle {
+                        x: 6px;
+                        y: (parent.height - self.height) / 2;
+                        width: 36px;
+                        height: 32px;
+                        border-radius: Theme.radius;
+                        background: toggle-ta.pressed ? Theme.nav-pressed
+                                  : toggle-ta.has-hover ? Theme.nav-hover
+                                  : transparent;
+                        border-width: toggle-ta.has-hover ? 1px : 0px;
+                        border-color: Theme.card-stroke;
+                        animate background { duration: Theme.dur-hover; easing: ease-out; }
+                        accessible-role: button;
+                        accessible-label: root.collapsed ? "展开侧边栏" : "收起侧边栏";
 
-                        VerticalLayout {
-                            alignment: center;
-                            toggle-btn := Rectangle {
-                                width: 36px;
-                                height: 32px;
-                                border-radius: Theme.radius;
-                                background: toggle-ta.pressed ? Theme.nav-pressed
-                                          : toggle-ta.has-hover ? Theme.nav-hover
-                                          : transparent;
-                                accessible-role: button;
-                                accessible-label: "展开或收起导航";
-
-                                toggle-ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { AppState.command(11, 0, 0); }
-                                }
-
-                                Icon {
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                    glyph: "sidebar";
-                                    size: 16px;
-                                    tint: Theme.text-2;
-                                }
-                            }
+                        toggle-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { AppState.command(11, 0, 0); }
                         }
 
-                        if !root.collapsed : Text {
+                        Icon {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph: root.collapsed ? "sidebar-closed" : "sidebar-open";
+                            size: 16px;
+                            tint: toggle-ta.has-hover ? Theme.text : Theme.text-2;
+                        }
+                    }
+
+                    // Unified MSI-Toolkit Red/White Shield emblem + wordmark (fades smoothly on collapse)
+                    Rectangle {
+                        x: root.collapsed ? 42px : 48px;
+                        y: 0px;
+                        width: 128px;
+                        height: parent.height;
+                        background: transparent;
+                        opacity: root.collapsed ? 0.0 : 1.0;
+                        animate x { duration: Theme.reduced-motion ? 0ms : 165ms; easing: cubic-bezier(0.22, 1.0, 0.36, 1.0); }
+                        animate opacity { duration: Theme.reduced-motion ? 0ms : 120ms; easing: ease-out; }
+
+                        Image {
+                            x: 0px;
+                            y: (parent.height - self.height) / 2;
+                            width: 18px;
+                            height: 18px;
+                            source: @image-url("assets/brand_icon.svg");
+                            image-fit: contain;
+                        }
+
+                        Text {
+                            x: 24px;
+                            y: 0px;
+                            width: 102px;
+                            height: parent.height;
                             text: "MSI-Toolkit";
                             font-size: Theme.font-caption;
                             font-weight: 600;
                             color: Theme.text;
                             vertical-alignment: center;
-                            horizontal-stretch: 1;
                             overflow: elide;
                         }
                     }
@@ -210,12 +247,19 @@ export component AppWindow inherits Window {
                     selected: AppState.page == i;
                     collapsed: root.collapsed;
                     activated => { AppState.command(10, i, 0); }
+                    hover-changed(h) => {
+                        if h {
+                            root.hovered-nav = i;
+                        } else if root.hovered-nav == i {
+                            root.hovered-nav = -1;
+                        }
+                    }
                 }
 
                 Rectangle {
-                    x: 12px;
+                    x: root.collapsed ? 10px : 12px;
                     y: nav-rail.footer-y - 6px;
-                    width: max(0px, nav-rail.width - 24px);
+                    width: max(0px, nav-rail.width - (root.collapsed ? 20px : 24px));
                     height: 1px;
                     background: Theme.divider;
                 }
@@ -230,6 +274,13 @@ export component AppWindow inherits Window {
                     collapsed: root.collapsed;
                     badge: AppState.update-state == 3 ? "新" : "";
                     activated => { AppState.command(10, 7, 0); }
+                    hover-changed(h) => {
+                        if h {
+                            root.hovered-nav = 7;
+                        } else if root.hovered-nav == 7 {
+                            root.hovered-nav = -1;
+                        }
+                    }
                 }
 
                 // Single floating Win11 3x16 accent selection pill
@@ -390,6 +441,31 @@ export component AppWindow inherits Window {
                     dismiss => { AppState.command(62, 0, 0); }
                 }
             }
+        }
+    }
+
+    // ── Collapsed sidebar floating hover tooltip (Win11 Fluent 2 pill) ──────
+    if root.collapsed && root.hovered-nav >= 0 && root.hovered-nav < root.nav-labels.length : Rectangle {
+        x: root.nav-width + 6px;
+        y: Theme.topbar-h + (root.hovered-nav == 7
+            ? nav-rail.footer-y
+            : (nav-rail.inset + nav-rail.row-step * root.hovered-nav)) + 4px;
+        height: 28px;
+        width: tip-text.preferred-width + 20px;
+        border-radius: Theme.radius;
+        background: Theme.toast-bg;
+        border-width: 1px;
+        border-color: Theme.toast-border;
+
+        tip-text := Text {
+            x: 10px;
+            y: 0px;
+            height: parent.height;
+            text: root.nav-labels[root.hovered-nav];
+            font-size: Theme.font-caption;
+            font-weight: 500;
+            color: Theme.text;
+            vertical-alignment: center;
         }
     }
 }

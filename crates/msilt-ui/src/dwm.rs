@@ -22,15 +22,19 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
     DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_TABBEDWINDOW, DWMWCP_ROUND,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
     RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD,
 };
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, SetWindowLongPtrW, SystemParametersInfoW, GWLP_WNDPROC, MINMAXINFO,
+    CallWindowProcW, GetSystemMetrics, LoadImageW, SendMessageW, SetWindowLongPtrW,
+    SystemParametersInfoW, GWLP_WNDPROC, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR,
+    LR_SHARED, MINMAXINFO, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
     SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SWP_NOSIZE, WINDOWPOS,
-    WM_GETMINMAXINFO, WM_WINDOWPOSCHANGING, WNDPROC,
+    WM_GETMINMAXINFO, WM_SETICON, WM_WINDOWPOSCHANGING, WNDPROC,
 };
+use windows::core::PCWSTR;
 
 /// `DwmSetWindowAttribute(38)` values that are not all exported by every
 /// `windows` crate version.
@@ -276,8 +280,36 @@ pub fn apply_chrome(hwnd: HWND, dark: bool) -> DwmReport {
     // 5. extend the frame so the client area is composited with the backdrop
     let margins = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     report.frame_extended = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.is_ok();
+    // 6. bind the embedded MSI-Toolkit icon resource (#1) to titlebar + taskbar + Alt-Tab
+    apply_window_icon(hwnd);
 
     report
+}
+
+/// Applies the embedded Win32 icon resource (ID 1) at exact DPI-scaled small & big sizes
+/// so the titlebar, taskbar, and Alt-Tab always match `assets/msilt.ico`.
+pub fn apply_window_icon(hwnd: HWND) {
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else {
+            return;
+        };
+        let res_id = PCWSTR(1usize as *const u16);
+        let flags = LR_DEFAULTCOLOR | LR_SHARED;
+        let sm_w = GetSystemMetrics(SM_CXSMICON).max(16);
+        let sm_h = GetSystemMetrics(SM_CYSMICON).max(16);
+        if let Ok(small) = LoadImageW(Some(module.into()), res_id, IMAGE_ICON, sm_w, sm_h, flags) {
+            if !small.is_invalid() {
+                let _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
+            }
+        }
+        let lg_w = GetSystemMetrics(SM_CXICON).max(32);
+        let lg_h = GetSystemMetrics(SM_CYICON).max(32);
+        if let Ok(big) = LoadImageW(Some(module.into()), res_id, IMAGE_ICON, lg_w, lg_h, flags) {
+            if !big.is_invalid() {
+                let _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
+            }
+        }
+    }
 }
 
 /// Re-applies only the pieces that change with the theme.

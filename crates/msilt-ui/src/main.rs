@@ -590,7 +590,11 @@ impl App {
             cmd::NAV_TOGGLE => {
                 if let Some(ui) = self.ui.upgrade() {
                     let state = ui.global::<AppState>();
-                    state.set_nav_collapsed(!state.get_nav_collapsed());
+                    if b == 1 {
+                        state.set_nav_collapsed(a != 0);
+                    } else {
+                        state.set_nav_collapsed(!state.get_nav_collapsed());
+                    }
                 }
                 return;
             }
@@ -1898,6 +1902,7 @@ fn run(options: Options) -> ExitCode {
         state.set_ui_version(env!("CARGO_PKG_VERSION").into());
         state.set_daemon_version(env!("CARGO_PKG_VERSION").into());
         state.set_page(options.page);
+        state.set_nav_collapsed(options.width < 1008);
         state.set_keyboard_conflict(false);
         state.set_keyboard_layout("24 区背光".into());
         state.set_automation_summary("正在读取规则…".into());

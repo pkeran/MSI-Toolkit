@@ -25,6 +25,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 OutputBaseFilename=MSI-Toolkit-Setup
+SetupIconFile=..\assets\msilt.ico
 UninstallDisplayName=MSI-Toolkit
 UninstallDisplayIcon={app}\msilt-ui.exe
 Compression=lzma2
