@@ -8,6 +8,7 @@ use std::{
         Arc,
         mpsc::{Receiver, SyncSender, sync_channel},
     },
+    time::{Duration, Instant},
 };
 
 use windows::{
@@ -122,6 +123,7 @@ pub(crate) struct Desktop {
     hotkey: bool,
     events: Receiver<UiEvent>,
     interactive: Arc<OwnedHandle>,
+    last_open_ui: Option<Instant>,
 }
 
 impl Desktop {
@@ -190,6 +192,7 @@ impl Desktop {
             hotkey: false,
             events,
             interactive,
+            last_open_ui: None,
         };
         unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) }
             .map_err(os_error)?;
@@ -289,6 +292,14 @@ impl Desktop {
                 }
             }
             UiEvent::OpenUi => {
+                let now = Instant::now();
+                if self
+                    .last_open_ui
+                    .is_some_and(|prev| now.duration_since(prev) < Duration::from_millis(450))
+                {
+                    return;
+                }
+                self.last_open_ui = Some(now);
                 if let Err(error) = launch_ui(&self.interactive) {
                     eprintln!("msilt-daemon: could not open Control Center: {error}");
                 }
@@ -432,7 +443,9 @@ unsafe extern "system" fn wnd_proc(
         }
         tray::TRAY_MESSAGE if !route.headless && ((lparam.0 as u32) >> 16) == tray::TRAY_ID => {
             match (lparam.0 as u32) & 0xffff {
-                NIN_SELECT | NIN_KEYSELECT => route.inbox.action(UserEvent::OpenUi),
+                NIN_SELECT | NIN_KEYSELECT | WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+                    route.inbox.action(UserEvent::OpenUi)
+                }
                 WM_CONTEXTMENU => route.inbox.action(UserEvent::Menu {
                     x: wparam.0 as i16 as i32,
                     y: (wparam.0 >> 16) as i16 as i32,

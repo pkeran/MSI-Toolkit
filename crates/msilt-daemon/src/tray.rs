@@ -94,6 +94,9 @@ impl Tray {
     ) -> io::Result<Option<Choice>> {
         let menu = Menu::new()?;
         menu.item(OPEN, "打开 MSI-Toolkit", true, false)?;
+        unsafe {
+            let _ = SetMenuDefaultItem(menu.0, OPEN as u32, 0);
+        }
         let mode = Menu::new()?;
         for (index, entry) in MODES.iter().copied().enumerate() {
             mode.item(

@@ -51,8 +51,38 @@ impl BitOrAssign for CapabilityFlags {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+macro_rules! str_enum_serde {
+    ($ty:ident, $name:literal, $( $variant:ident => $wire:literal ),+ $(,)?) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(match self {
+                    $( Self::$variant => $wire, )+
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                struct V;
+                impl serde::de::Visitor<'_> for V {
+                    type Value = $ty;
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str($name)
+                    }
+                    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                        match v {
+                            $( $wire => Ok($ty::$variant), )+
+                            _ => Err(E::custom($name)),
+                        }
+                    }
+                }
+                d.deserialize_str(V)
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaemonStatus {
     #[default]
     Starting,
@@ -60,9 +90,14 @@ pub enum DaemonStatus {
     Degraded,
     Stopping,
 }
+str_enum_serde!(DaemonStatus, "daemon status",
+    Starting => "starting",
+    Ready => "ready",
+    Degraded => "degraded",
+    Stopping => "stopping",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EcWriteStatus {
     #[default]
     Unavailable,
@@ -72,15 +107,28 @@ pub enum EcWriteStatus {
     Enabled,
     RecoveryRequired,
 }
+str_enum_serde!(EcWriteStatus, "ec write status",
+    Unavailable => "unavailable",
+    ReadOnlyFirmware => "readOnlyFirmware",
+    UnverifiedMapping => "unverifiedMapping",
+    ConflictDetected => "conflictDetected",
+    Enabled => "enabled",
+    RecoveryRequired => "recoveryRequired",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceMode {
     SuperBattery,
     Silent,
     Balanced,
     ExtremePerformance,
 }
+str_enum_serde!(PerformanceMode, "performance mode",
+    SuperBattery => "superBattery",
+    Silent => "silent",
+    Balanced => "balanced",
+    ExtremePerformance => "extremePerformance",
+);
 
 impl PerformanceMode {
     pub const fn protocol_name(self) -> &'static str {
@@ -93,20 +141,27 @@ impl PerformanceMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerSource {
     Ac,
     Battery,
 }
+str_enum_serde!(PowerSource, "power source",
+    Ac => "ac",
+    Battery => "battery",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuMuxMode {
     Hybrid,
     Discrete,
     Integrated,
 }
+str_enum_serde!(GpuMuxMode, "gpu mux mode",
+    Hybrid => "hybrid",
+    Discrete => "discrete",
+    Integrated => "integrated",
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,20 +181,27 @@ pub struct GpuClockOffsetState {
     pub mem_max_mhz: i16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FanChannel {
     Cpu,
     Gpu,
 }
+str_enum_serde!(FanChannel, "fan channel",
+    Cpu => "cpu",
+    Gpu => "gpu",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FanMode {
     Auto,
     Silent,
     Advanced,
 }
+str_enum_serde!(FanMode, "fan mode",
+    Auto => "auto",
+    Silent => "silent",
+    Advanced => "advanced",
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]

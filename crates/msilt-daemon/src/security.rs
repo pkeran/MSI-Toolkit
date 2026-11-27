@@ -22,10 +22,14 @@ use windows::{
         },
         UI::{
             Shell::*,
-            WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId},
+            WindowsAndMessaging::{
+                AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GW_OWNER, GetShellWindow,
+                GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
+                SW_SHOW, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+            },
         },
     },
-    core::{GUID, PCWSTR, PWSTR},
+    core::{BOOL, GUID, PCWSTR, PWSTR},
 };
 
 use crate::win::{LocalAllocation, denied, is_error, os_error, own, raw, wide};
@@ -242,8 +246,30 @@ impl Security {
         }
         // Without SeTcbPrivilege, Windows can return an identification-only linked
         // token. Use the shell's primary token only after matching its login to it.
+        let primary_access = TOKEN_QUERY
+            | TOKEN_DUPLICATE
+            | TOKEN_ASSIGN_PRIMARY
+            | TOKEN_IMPERSONATE
+            | TOKEN_ADJUST_DEFAULT
+            | TOKEN_ADJUST_SESSIONID;
         let interactive = if token_value::<u32>(raw(&linked), TokenType)? == TokenPrimary.0 as u32 {
-            linked
+            let mut primary = HANDLE::default();
+            if unsafe {
+                DuplicateTokenEx(
+                    raw(&linked),
+                    primary_access,
+                    None,
+                    SecurityImpersonation,
+                    TokenPrimary,
+                    &mut primary,
+                )
+            }
+            .is_ok()
+            {
+                unsafe { own(primary) }
+            } else {
+                linked
+            }
         } else {
             let shell = unsafe { GetShellWindow() };
             let mut pid = 0;
@@ -268,7 +294,7 @@ impl Security {
             unsafe {
                 DuplicateTokenEx(
                     raw(&token),
-                    TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE,
+                    primary_access,
                     None,
                     SecurityImpersonation,
                     TokenPrimary,
@@ -940,11 +966,17 @@ fn open_non_reparse_dir(path: &Path) -> io::Result<OwnedHandle> {
     Ok(handle)
 }
 
+fn strip_verbatim(path: &Path) -> Vec<u16> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.len() > 4 && wide[..4] == [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16] {
+        wide[4..].to_vec()
+    } else {
+        wide
+    }
+}
+
 fn path_equal(a: &Path, b: &Path) -> bool {
-    let (a, b): (Vec<u16>, Vec<u16>) = (
-        a.as_os_str().encode_wide().collect(),
-        b.as_os_str().encode_wide().collect(),
-    );
+    let (a, b) = (strip_verbatim(a), strip_verbatim(b));
     // CompareStringOrdinal uses the same invariant case folding as NTFS path lookup.
     unsafe { CompareStringOrdinal(a.as_slice(), b.as_slice(), true) == CSTR_EQUAL }
 }
@@ -955,11 +987,16 @@ fn trusted_owner(sid: &str) -> bool {
 
 fn protected_object(path: &Path, directory: bool) -> io::Result<OwnedHandle> {
     let name = wide(path);
+    let share = if directory {
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+    } else {
+        FILE_SHARE_READ
+    };
     let handle = unsafe {
         own(CreateFileW(
             PCWSTR(name.as_ptr()),
             FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
-            FILE_SHARE_READ,
+            share,
             None,
             OPEN_EXISTING,
             FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
@@ -1025,16 +1062,193 @@ fn protected_object(path: &Path, directory: bool) -> io::Result<OwnedHandle> {
     Ok(handle)
 }
 
+fn focus_existing_ui(expected_ui: &Path, expected_session: u32) -> bool {
+    struct Search<'a> {
+        ui: &'a Path,
+        session: u32,
+        hwnd: HWND,
+        pid: u32,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = unsafe { &mut *(lparam.0 as *mut Search<'_>) };
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return BOOL(1);
+        }
+        if unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|owner| !owner.0.is_null()) {
+            return BOOL(1);
+        }
+        let mut pid = 0u32;
+        if unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) } == 0 || pid == 0 {
+            return BOOL(1);
+        }
+        let mut session = 0u32;
+        if unsafe { ProcessIdToSessionId(pid, &mut session) }.is_err() || session != search.session
+        {
+            return BOOL(1);
+        }
+        let Ok(process) =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.map(|h| unsafe { own(h) })
+        else {
+            return BOOL(1);
+        };
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        if unsafe {
+            QueryFullProcessImageNameW(
+                raw(&process),
+                PROCESS_NAME_FORMAT(0),
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+        }
+        .is_ok()
+        {
+            let actual = PathBuf::from(OsString::from_wide(&buf[..len as usize]));
+            if path_equal(&actual, search.ui) {
+                search.hwnd = hwnd;
+                search.pid = pid;
+                return BOOL(0);
+            }
+        }
+        BOOL(1)
+    }
+
+    let mut search = Search {
+        ui: expected_ui,
+        session: expected_session,
+        hwnd: HWND::default(),
+        pid: 0,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM((&raw mut search) as isize));
+    }
+    if search.hwnd.0.is_null() {
+        return false;
+    }
+    unsafe {
+        let cmd = if IsIconic(search.hwnd).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindow(search.hwnd, cmd);
+        let _ = AllowSetForegroundWindow(search.pid);
+        let _ = SetForegroundWindow(search.hwnd);
+        let _ = BringWindowToTop(search.hwnd);
+    }
+    true
+}
+
+fn spawn_via_shell_parent(
+    exe: &[u16],
+    dir: &[u16],
+    environment: Option<*mut c_void>,
+    expected: &Identity,
+) -> io::Result<()> {
+    let shell = unsafe { GetShellWindow() };
+    let mut pid = 0u32;
+    if shell.is_invalid() || unsafe { GetWindowThreadProcessId(shell, Some(&mut pid)) } == 0 {
+        return Err(denied("interactive Windows shell is unavailable"));
+    }
+    let shell_proc = unsafe {
+        own(
+            OpenProcess(
+                PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            )
+            .map_err(os_error)?,
+        )
+    };
+    let shell_token = process_token(raw(&shell_proc), TOKEN_QUERY)?;
+    let shell_id = Identity::read(raw(&shell_token))?;
+    if !expected.same_user_session(&shell_id)
+        || expected.logon != shell_id.logon
+        || !shell_id.medium()
+    {
+        return Err(denied(
+            "shell process does not match the interactive medium desktop login",
+        ));
+    }
+
+    let mut attr_bytes = 0usize;
+    let _ = unsafe { InitializeProcThreadAttributeList(None, 1, Some(0), &mut attr_bytes) };
+    if attr_bytes == 0 || attr_bytes > 4096 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut attr_buf = vec![0usize; attr_bytes.div_ceil(size_of::<usize>())];
+    let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_buf.as_mut_ptr().cast());
+    unsafe { InitializeProcThreadAttributeList(Some(attr_list), 1, Some(0), &mut attr_bytes) }
+        .map_err(os_error)?;
+    struct AttrGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
+    impl Drop for AttrGuard {
+        fn drop(&mut self) {
+            unsafe {
+                DeleteProcThreadAttributeList(self.0);
+            }
+        }
+    }
+    let _guard = AttrGuard(attr_list);
+
+    let mut parent_handle = raw(&shell_proc);
+    unsafe {
+        UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
+            Some((&raw mut parent_handle).cast()),
+            size_of::<HANDLE>(),
+            None,
+            None,
+        )
+    }
+    .map_err(os_error)?;
+
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    startup.StartupInfo.wShowWindow = SW_SHOWNORMAL.0 as u16;
+    startup.lpAttributeList = attr_list;
+
+    let mut flags = EXTENDED_STARTUPINFO_PRESENT;
+    if environment.is_some() {
+        flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+    let mut process = PROCESS_INFORMATION::default();
+    unsafe {
+        CreateProcessW(
+            PCWSTR(exe.as_ptr()),
+            None,
+            None,
+            None,
+            false,
+            flags,
+            environment.map(|ptr| ptr as *const c_void),
+            PCWSTR(dir.as_ptr()),
+            &startup.StartupInfo,
+            &mut process,
+        )
+        .map_err(os_error)?;
+        let _ = AllowSetForegroundWindow(process.dwProcessId);
+        drop(own(process.hThread));
+        drop(own(process.hProcess));
+    }
+    Ok(())
+}
+
 pub(crate) fn launch_ui(token: &OwnedHandle) -> io::Result<()> {
     let install = ProtectedInstall::open()?;
     let _daemon = install.image(&std::env::current_exe()?, "msilt-daemon.exe")?;
     let ui = install.directory.join("msilt-ui.exe");
     let _ui = install.image(&ui, "msilt-ui.exe")?;
+    let expected = Identity::read(raw(token))?;
+    if focus_existing_ui(&ui, expected.session) {
+        return Ok(());
+    }
     let exe = wide(&ui);
     let dir = wide(&install.directory);
-    let mut environment = ptr::null_mut();
-    unsafe { CreateEnvironmentBlock(&mut environment, Some(raw(token)), false) }
-        .map_err(os_error)?;
+    let mut env_ptr = ptr::null_mut();
     struct Environment(*mut c_void);
     impl Drop for Environment {
         fn drop(&mut self) {
@@ -1043,10 +1257,28 @@ pub(crate) fn launch_ui(token: &OwnedHandle) -> io::Result<()> {
             }
         }
     }
-    let environment = Environment(environment);
+    let environment = unsafe { CreateEnvironmentBlock(&mut env_ptr, Some(raw(token)), false) }
+        .ok()
+        .map(|()| Environment(env_ptr));
+    let env_opt = environment.as_ref().map(|e| e.0);
+
+    // Prefer Microsoft's PROC_THREAD_ATTRIBUTE_PARENT_PROCESS de-elevation via the
+    // verified medium-integrity explorer.exe shell (needs neither SeImpersonatePrivilege
+    // nor the seclogon service), falling back to CreateProcessWithTokenW if needed.
+    if spawn_via_shell_parent(&exe, &dir, env_opt, &expected).is_ok() {
+        return Ok(());
+    }
+
     let startup = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: SW_SHOWNORMAL.0 as u16,
         ..Default::default()
+    };
+    let flags = if env_opt.is_some() {
+        CREATE_UNICODE_ENVIRONMENT
+    } else {
+        PROCESS_CREATION_FLAGS(0)
     };
     let mut process = PROCESS_INFORMATION::default();
     unsafe {
@@ -1055,13 +1287,14 @@ pub(crate) fn launch_ui(token: &OwnedHandle) -> io::Result<()> {
             CREATE_PROCESS_LOGON_FLAGS(0),
             PCWSTR(exe.as_ptr()),
             None,
-            CREATE_UNICODE_ENVIRONMENT,
-            Some(environment.0),
+            flags,
+            env_opt.map(|ptr| ptr as *const c_void),
             PCWSTR(dir.as_ptr()),
             &startup,
             &mut process,
         )
         .map_err(os_error)?;
+        let _ = AllowSetForegroundWindow(process.dwProcessId);
         drop(own(process.hThread));
         drop(own(process.hProcess));
     }
@@ -1115,5 +1348,9 @@ mod tests {
             CLIENT_ACCESS
         );
         assert_eq!(CLIENT_ACCESS & FILE_APPEND_DATA.0, 0);
+        assert!(path_equal(
+            Path::new(r"\\?\C:\Program Files\MSI-Toolkit\msilt-ui.exe"),
+            Path::new(r"c:\program files\msi-toolkit\msilt-ui.exe"),
+        ));
     }
 }
