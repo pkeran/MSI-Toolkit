@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use msilt_core::{
-    EcMap, FanChannel, FanCurve, FanPoint, FanState, HardwareIdentity, PerformanceMode,
+    EcMap, FanChannel, FanCurve, FanMode, FanPoint, FanState, HardwareIdentity, PerformanceMode,
 };
 use serde_json::json;
 
@@ -13,6 +13,9 @@ pub const COOLER: u8 = 0x98;
 pub const COOLER_MASK: u8 = 0x80;
 pub const SHIFT: u8 = 0xD2;
 pub const FAN_MODE: u8 = 0xD4;
+pub const FAN_MODE_AUTO: u8 = 0x0D;
+pub const FAN_MODE_SILENT: u8 = 0x1D;
+pub const FAN_MODE_ADVANCED: u8 = 0x8D;
 pub const BATTERY_MODE: u8 = 0xEB;
 pub const BATTERY_MODE_MASK: u8 = 0x0F;
 pub const CHARGE: u8 = 0xD7;
@@ -56,10 +59,36 @@ pub fn matches_identity(identity: &HardwareIdentity) -> bool {
 
 pub fn mode_registers(mode: PerformanceMode) -> (u8, u8, u8) {
     match mode {
-        PerformanceMode::SuperBattery => (0xC2, 0x0D, 0x0F),
-        PerformanceMode::Silent => (0xC1, 0x1D, 0),
-        PerformanceMode::Balanced => (0xC1, 0x0D, 0),
-        PerformanceMode::ExtremePerformance => (0xC4, 0x0D, 0),
+        PerformanceMode::SuperBattery => (0xC2, FAN_MODE_AUTO, 0x0F),
+        PerformanceMode::Silent => (0xC1, FAN_MODE_SILENT, 0),
+        PerformanceMode::Balanced => (0xC1, FAN_MODE_AUTO, 0),
+        PerformanceMode::ExtremePerformance => (0xC4, FAN_MODE_AUTO, 0),
+    }
+}
+
+pub const fn default_fan_mode(mode: PerformanceMode) -> FanMode {
+    match mode {
+        PerformanceMode::Silent => FanMode::Silent,
+        PerformanceMode::SuperBattery
+        | PerformanceMode::Balanced
+        | PerformanceMode::ExtremePerformance => FanMode::Auto,
+    }
+}
+
+pub const fn fan_mode_byte(mode: FanMode) -> u8 {
+    match mode {
+        FanMode::Auto => FAN_MODE_AUTO,
+        FanMode::Silent => FAN_MODE_SILENT,
+        FanMode::Advanced => FAN_MODE_ADVANCED,
+    }
+}
+
+pub fn decode_fan_mode(raw: u8) -> Option<FanMode> {
+    match raw {
+        FAN_MODE_AUTO => Some(FanMode::Auto),
+        FAN_MODE_SILENT => Some(FanMode::Silent),
+        FAN_MODE_ADVANCED => Some(FanMode::Advanced),
+        _ => None,
     }
 }
 
@@ -74,6 +103,9 @@ pub(crate) fn decode_mode(shift: u8, fan: u8, battery: u8) -> Option<Performance
 }
 
 pub(crate) fn decode_charge(raw: u8) -> Option<u8> {
+    if raw == CHARGE_BASE {
+        return Some(100);
+    }
     raw.checked_sub(CHARGE_BASE)
         .filter(|percent| (1..=100).contains(percent))
 }
@@ -97,7 +129,7 @@ pub fn write_map() -> Option<&'static EcMap> {
                 {"address": SHIFT, "values": [0xC1, 0xC2, 0xC4]},
                 {"address": FAN_MODE, "values": [0x0D, 0x1D, 0x8D]},
                 {"address": BATTERY_MODE, "values": (0..=255u8).filter(|&n| matches!(n & BATTERY_MODE_MASK, 0 | 0x0F)).collect::<Vec<_>>()},
-                {"address": CHARGE, "values": CHARGE_LIMITS.map(|percent| CHARGE_BASE + percent)}
+                {"address": CHARGE, "values": [CHARGE_BASE, CHARGE_BASE + 60, CHARGE_BASE + 80, CHARGE_BASE + 100]}
             ],
             "fanCurves": {
                 "cpu": curve(CPU_KNOTS, CPU_FLOOR, CPU_DUTY),
@@ -142,8 +174,15 @@ mod tests {
         assert_eq!(decode_mode(0xC4, 0x1D, 0), None);
         assert_eq!(decode_mode(0xC1, 0x0D, 0x07), None);
         assert_eq!(decode_charge(0xD0), Some(80));
-        assert_eq!(decode_charge(0x80), None);
+        assert_eq!(decode_charge(0x80), Some(100));
+        assert_eq!(decode_charge(0x7F), None);
         assert_eq!(decode_charge(0xE5), None);
+        assert_eq!(decode_fan_mode(FAN_MODE_AUTO), Some(FanMode::Auto));
+        assert_eq!(decode_fan_mode(FAN_MODE_SILENT), Some(FanMode::Silent));
+        assert_eq!(decode_fan_mode(FAN_MODE_ADVANCED), Some(FanMode::Advanced));
+        assert_eq!(decode_fan_mode(0x00), None);
+        assert_eq!(default_fan_mode(PerformanceMode::Silent), FanMode::Silent);
+        assert_eq!(default_fan_mode(PerformanceMode::Balanced), FanMode::Auto);
     }
 
     #[test]

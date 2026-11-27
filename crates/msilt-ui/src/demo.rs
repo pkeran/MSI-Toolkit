@@ -4,10 +4,10 @@
 
 use msilt_core::{
     AutomationRuleView, BatteryDetail, CapabilityFlags, DaemonStatus, EcWriteStatus, FanCurve,
-    FanCurveLimits, FanPoint, FanState, GpuMuxMode, GpuMuxState, HardwareIdentity, HardwareState,
-    OemInventory, OemItemKind, OemItemStatus, OemPackageId, OemPackageStatus, OemProcessStatus,
-    OemScope, PerformanceMode, PowerSource, Rgb8, StartupMode, StartupStatus, SystemSnapshot,
-    TelemetrySample, KEYBOARD_ZONE_COUNT,
+    FanCurveLimits, FanMode, FanPoint, FanState, GpuMuxMode, GpuMuxState, HardwareIdentity,
+    HardwareState, OemInventory, OemItemKind, OemItemStatus, OemPackageId, OemPackageStatus,
+    OemProcessStatus, OemScope, PerformanceMode, PowerSource, Rgb8, StartupMode, StartupStatus,
+    SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT,
 };
 
 pub const CPU_TEMPS: [u8; 6] = [0, 48, 56, 62, 70, 78];
@@ -89,6 +89,7 @@ pub fn snapshot() -> SystemSnapshot {
                 PerformanceMode::ExtremePerformance,
             ],
             performance_mode: Some(PerformanceMode::Balanced),
+            fan_mode: Some(FanMode::Auto),
             cpu_fan: Some(fan(CPU_TEMPS, CPU_DUTIES)),
             gpu_fan: Some(fan(GPU_TEMPS, GPU_DUTIES)),
             cooler_boost: Some(false),
@@ -121,6 +122,7 @@ pub fn snapshot() -> SystemSnapshot {
             keyboard_conflict: Some(false),
         },
         manual_overrides: Vec::new(),
+        custom_fan_modes: Vec::new(),
     }
 }
 

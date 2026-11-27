@@ -1188,3 +1188,315 @@ fn transient_sample_timeout_preserves_hardware_controls() {
         Ok(IpcReply::Applied { .. })
     ));
 }
+
+#[test]
+fn per_mode_custom_fan_curves_persist_switch_and_reset_to_auto() {
+    use msilt_hal::ms17s3::*;
+
+    struct PipeMs17s3Ec {
+        inner: msilt_hal::mock::MockHal,
+    }
+    impl PipeMs17s3Ec {
+        fn new() -> Self {
+            let mut inner = msilt_hal::mock::MockHal::default()
+                .with_register(COOLER, 0x02)
+                .with_register(SHIFT, 0xC1)
+                .with_register(FAN_MODE, FAN_MODE_AUTO)
+                .with_register(BATTERY_MODE, 0xB0);
+            let cpu = [0, 36, 42, 52, 76, 84];
+            let gpu = [0, 36, 46, 56, 80, 88];
+            for i in 0..6 {
+                inner = inner
+                    .with_register(0x72 + i as u8, cpu[i])
+                    .with_register(0x8A + i as u8, gpu[i]);
+            }
+            Self { inner }
+        }
+    }
+    impl HardwareRead for PipeMs17s3Ec {
+        fn inspect(&mut self) -> HalResult<HardwareReport> {
+            let map = write_map().unwrap();
+            let shift = self.inner.register(SHIFT).unwrap();
+            let fan = self.inner.register(FAN_MODE).unwrap();
+            let battery = self.inner.register(BATTERY_MODE).unwrap();
+            let cooler = self.inner.register(COOLER).unwrap();
+            let mode = match (shift, fan, battery & BATTERY_MODE_MASK) {
+                (0xC1 | 0xC2 | 0xC4, 0x0D | 0x1D | 0x8D, 0x0F) => Some(PerformanceMode::SuperBattery),
+                (0xC1 | 0xC2, 0x1D, 0) => Some(PerformanceMode::Silent),
+                (0xC1, 0x0D | 0x8D, 0) => Some(PerformanceMode::Balanced),
+                (0xC4, 0x0D | 0x8D, 0) => Some(PerformanceMode::ExtremePerformance),
+                _ => None,
+            };
+            let cpu_duties: [u8; 6] = std::array::from_fn(|i| self.inner.register(0x72 + i as u8).unwrap());
+            let gpu_duties: [u8; 6] = std::array::from_fn(|i| self.inner.register(0x8A + i as u8).unwrap());
+            let cpu_t = [0, 48, 56, 62, 70, 78];
+            let gpu_t = [0, 43, 48, 56, 65, 72];
+            let flags = CapabilityFlags::PERFORMANCE_MODE
+                | CapabilityFlags::FAN_CURVE
+                | CapabilityFlags::COOLER_BOOST;
+            Ok(HardwareReport {
+                readable: flags,
+                controls_detected: flags,
+                state: HardwareState {
+                    identity: HardwareIdentity {
+                        board_id: Some("MS-17S3".into()),
+                        ec_firmware: Some("17S3EMS1.107".into()),
+                    },
+                    supported_performance_modes: MODES.to_vec(),
+                    performance_mode: mode,
+                    fan_mode: decode_fan_mode(fan),
+                    cpu_fan: Some(FanState {
+                        curve: FanCurve {
+                            points: std::array::from_fn(|i| FanPoint {
+                                temperature_c: cpu_t[i],
+                                duty_percent: cpu_duties[i],
+                            }),
+                        },
+                        limits: map.fan_curve_limits(FanChannel::Cpu),
+                    }),
+                    gpu_fan: Some(FanState {
+                        curve: FanCurve {
+                            points: std::array::from_fn(|i| FanPoint {
+                                temperature_c: gpu_t[i],
+                                duty_percent: gpu_duties[i],
+                            }),
+                        },
+                        limits: map.fan_curve_limits(FanChannel::Gpu),
+                    }),
+                    cooler_boost: Some(cooler & COOLER_MASK != 0),
+                    ..Default::default()
+                },
+            })
+        }
+        fn sample_telemetry(&mut self) -> HalResult<TelemetrySample> {
+            Err(HalError::Unsupported)
+        }
+    }
+    impl EcRegisterIo for PipeMs17s3Ec {
+        fn read_byte(&mut self, address: u8) -> HalResult<u8> {
+            self.inner.read_byte(address)
+        }
+        fn write_byte(&mut self, permit: &AuthorizedEcWrite) -> HalResult<()> {
+            self.inner.write_byte(permit)
+        }
+    }
+    impl PlatformControl for PipeMs17s3Ec {
+        fn set_display_refresh_rate(&mut self, _: u16) -> HalResult<u16> {
+            Err(HalError::Unsupported)
+        }
+        fn set_display_brightness(&mut self, _: u8) -> HalResult<u8> {
+            Err(HalError::Unsupported)
+        }
+        fn set_color_profile(&mut self, _: &str) -> HalResult<()> {
+            Err(HalError::Unsupported)
+        }
+        fn set_keyboard_lighting(&mut self, _: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+            Err(HalError::Unsupported)
+        }
+    }
+
+    struct PipeMs17s3Policy;
+    impl crate::EcWritePolicy for PipeMs17s3Policy {
+        fn authorize(&mut self, _: &HardwareReport) -> Result<&EcMap, EcWriteStatus> {
+            Ok(write_map().unwrap())
+        }
+        fn writable_targets(&self) -> CapabilityFlags {
+            CapabilityFlags::PERFORMANCE_MODE
+                | CapabilityFlags::FAN_CURVE
+                | CapabilityFlags::COOLER_BOOST
+        }
+        fn register_intent(&self, _: &ControlChange) -> Option<EcWrite> {
+            None
+        }
+        fn fan_mode_write(&self, mode: FanMode) -> Option<(EcWrite, u8)> {
+            Some((
+                EcWrite {
+                    address: FAN_MODE,
+                    value: fan_mode_byte(mode),
+                },
+                u8::MAX,
+            ))
+        }
+        fn default_fan_mode(&self, mode: PerformanceMode) -> Option<FanMode> {
+            Some(default_fan_mode(mode))
+        }
+        fn mode_register_plan(&self, mode: PerformanceMode, custom_fan: bool) -> Vec<(EcWrite, u8)> {
+            let entry = |address, value, mask| (EcWrite { address, value }, mask);
+            let (shift, default_fan, battery) = mode_registers(mode);
+            let fan = if custom_fan && FanProfileStore::supports_custom(mode) {
+                FAN_MODE_ADVANCED
+            } else {
+                default_fan
+            };
+            vec![
+                entry(FAN_MODE, fan, u8::MAX),
+                entry(SHIFT, shift, u8::MAX),
+                entry(BATTERY_MODE, battery, BATTERY_MODE_MASK),
+            ]
+        }
+    }
+
+    let files = TestDir::new("fan-profiles");
+    let name = local_pipe_name(files.0.file_name().unwrap().to_str().unwrap()).unwrap();
+    let port = Port::new().unwrap();
+    let (inbox, window_actions) = Inbox::new(&port);
+    let stats = Arc::new(Diagnostics::default());
+    let backends = DaemonBackends::new(
+        || HalBackends::new(PipeMs17s3Ec::new(), CapabilityFlags::NONE).with_ec_policy(PipeMs17s3Policy),
+        msilt_automation::RuleEngine::new(),
+    );
+    let host = Host {
+        port,
+        name: name.clone(),
+        security: Security::isolated().unwrap(),
+        store: ConfigStore::isolated(files.0.clone()),
+        backends,
+        inbox: inbox.clone(),
+        window_actions,
+        desktop: None,
+        process_qos: false,
+        readonly: false,
+        load_stored_rules: false,
+        diagnostics: stats.clone(),
+    };
+    let handle = thread::spawn(move || coordinator::run(host));
+    wait_for(Duration::from_secs(2), || stats.listening.load(Acquire) || handle.is_finished());
+    assert!(stats.listening.load(Acquire));
+
+    let mut ui = Client::open(&name, SECURITY_IDENTIFICATION);
+    let s0 = ui.hello(ClientKind::Ui);
+    assert_eq!(s0.hardware.performance_mode, Some(PerformanceMode::Balanced));
+    assert_eq!(s0.hardware.fan_mode, Some(FanMode::Auto));
+    assert!(s0.custom_fan_modes.is_empty());
+
+    let make_cpu = |d: [u8; 6]| FanCurve {
+        points: std::array::from_fn(|i| FanPoint {
+            temperature_c: [0, 48, 56, 62, 70, 78][i],
+            duty_percent: d[i],
+        }),
+    };
+    let bal_cpu = make_cpu([0, 40, 50, 62, 82, 95]);
+    let ext_cpu = make_cpu([0, 50, 65, 80, 105, 130]);
+
+    // 1. Apply custom CPU curve in Balanced -> activates Advanced + persists Balanced profile.
+    let IpcReply::Applied { snapshot: s1 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s0.revision,
+            change: ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: bal_cpu,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s1.hardware.fan_mode, Some(FanMode::Advanced));
+    assert_eq!(s1.hardware.cpu_fan.unwrap().curve, bal_cpu);
+    assert_eq!(s1.custom_fan_modes, vec![PerformanceMode::Balanced]);
+    assert!(files.0.join("fan-profiles.json").is_file());
+
+    // 2. Switch to ExtremePerformance (no custom curve yet) -> switches EC to Auto (0x0D).
+    thread::sleep(Duration::from_millis(420));
+    let IpcReply::Applied { snapshot: s2 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s1.revision,
+            change: ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::ExtremePerformance,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s2.hardware.performance_mode, Some(PerformanceMode::ExtremePerformance));
+    assert_eq!(s2.hardware.fan_mode, Some(FanMode::Auto));
+    assert_eq!(s2.custom_fan_modes, vec![PerformanceMode::Balanced]);
+
+    // 3. Apply custom CPU curve in ExtremePerformance -> activates Advanced + remembers both modes.
+    thread::sleep(Duration::from_millis(420));
+    let IpcReply::Applied { snapshot: s3 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s2.revision,
+            change: ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: ext_cpu,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s3.hardware.fan_mode, Some(FanMode::Advanced));
+    assert_eq!(s3.hardware.cpu_fan.unwrap().curve, ext_cpu);
+    assert_eq!(
+        s3.custom_fan_modes,
+        vec![PerformanceMode::Balanced, PerformanceMode::ExtremePerformance]
+    );
+
+    // 4. Switch back to Balanced -> automatically restores Balanced's memorized curve + Advanced!
+    thread::sleep(Duration::from_millis(420));
+    let IpcReply::Applied { snapshot: s4 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s3.revision,
+            change: ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::Balanced,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s4.hardware.performance_mode, Some(PerformanceMode::Balanced));
+    assert_eq!(s4.hardware.fan_mode, Some(FanMode::Advanced));
+    assert_eq!(s4.hardware.cpu_fan.unwrap().curve, bal_cpu);
+
+    // 5. ResetFanMode in Balanced -> reverts EC to Auto and clears Balanced custom memory.
+    thread::sleep(Duration::from_millis(2600));
+    let IpcReply::Applied { snapshot: s5 } = ui
+        .call(IpcCommand::ResetFanMode {
+            expected_revision: s4.revision,
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s5.hardware.performance_mode, Some(PerformanceMode::Balanced));
+    assert_eq!(s5.hardware.fan_mode, Some(FanMode::Auto));
+    assert_eq!(s5.custom_fan_modes, vec![PerformanceMode::ExtremePerformance]);
+
+    // 6. Switch to ExtremePerformance -> restores ext_cpu + Advanced; switch back to Balanced -> stays Auto!
+    thread::sleep(Duration::from_millis(2600));
+    let IpcReply::Applied { snapshot: s6 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s5.revision,
+            change: ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::ExtremePerformance,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s6.hardware.fan_mode, Some(FanMode::Advanced));
+    assert_eq!(s6.hardware.cpu_fan.unwrap().curve, ext_cpu);
+
+    thread::sleep(Duration::from_millis(2600));
+    let IpcReply::Applied { snapshot: s7 } = ui
+        .call(IpcCommand::Control {
+            expected_revision: s6.revision,
+            change: ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::Balanced,
+            },
+        })
+        .unwrap()
+    else {
+        panic!("expected Applied");
+    };
+    assert_eq!(s7.hardware.performance_mode, Some(PerformanceMode::Balanced));
+    assert_eq!(s7.hardware.fan_mode, Some(FanMode::Auto));
+
+    drop(ui);
+    inbox.stop();
+    handle.join().unwrap().unwrap();
+}

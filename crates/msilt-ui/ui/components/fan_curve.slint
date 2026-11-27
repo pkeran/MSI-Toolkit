@@ -1,54 +1,112 @@
-// `FanCurveEditor` — the 6-knot CPU/GPU fan curve canvas with 2x3 numeric stepper grid.
+// `FanCurveEditor` — the 6-knot CPU/GPU fan curve canvas with a clean single-row
+// 5-knot inline duty stepper bar (knot 0 is the fixed 0°C/0% anchor on the chart).
 //
 // Contract (docs/UI_DESIGN_SPEC.md §6.1 & docs/HARDWARE_PROTOCOLS.md §2):
 //   * Temperatures are FIXED knots; only duty (Y) may move.
 //   * Knot 0 is the verified anchor and is locked when `anchor` is true.
 //   * Duty must stay >= factory floor, non-decreasing, and <= `max-duty`.
-//   * Numeric steppers use a 2x3 grid so SpinBox never clips even at 960px min width.
 
 import { Theme } from "../theme.slint";
 import { CurvePoint, Fmt } from "../state.slint";
-import { SpinBox } from "std-widgets.slint";
 import { FluentButton } from "fluent_button.slint";
 import { Chip } from "primitives.slint";
 
-export component DutyStepper inherits Rectangle {
-    in property <int> duty: -1;
+component StepGlyphButton inherits Rectangle {
+    in property <bool> plus: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 18px;
+    height: 22px;
+    border-radius: Theme.radius-sm;
+    background: !root.enabled ? transparent
+              : ta.pressed ? Theme.subtle-pressed
+              : ta.has-hover ? Theme.subtle-hover
+              : transparent;
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    // Crisp horizontal bar (−)
+    Rectangle {
+        x: (parent.width - 8px) / 2;
+        y: (parent.height - 1.5px) / 2;
+        width: 8px;
+        height: 1.5px;
+        border-radius: 0.75px;
+        background: root.enabled ? Theme.text-2 : Theme.text-disabled;
+    }
+    // Crisp vertical bar (+)
+    if root.plus : Rectangle {
+        x: (parent.width - 1.5px) / 2;
+        y: (parent.height - 8px) / 2;
+        width: 1.5px;
+        height: 8px;
+        border-radius: 0.75px;
+        background: root.enabled ? Theme.text-2 : Theme.text-disabled;
+    }
+}
+
+component KnotColumn inherits Rectangle {
+    in property <int> temp: 0;
+    in property <int> duty: 0;
     in property <int> floor: 0;
     in property <int> ceiling: 100;
-    in property <bool> locked: false;
     in property <bool> enabled: true;
     callback stepped(value: int);
 
-    height: 30px;
+    min-width: 0px;
+    preferred-width: 0px;
     horizontal-stretch: 1;
+    height: 44px;
     background: transparent;
 
-    if locked : Rectangle {
-        width: parent.width;
-        height: parent.height;
-        border-radius: Theme.radius;
-        background: Theme.card-disabled;
-        border-width: 1px;
-        border-color: Theme.card-stroke;
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        padding-left: 2px;
+        padding-right: 2px;
+
         Text {
-            text: Fmt.pct(root.duty) + " 锁定";
-            font-size: Theme.font-micro;
+            text: "" + root.temp + "°C";
+            font-size: 11px;
             font-family: Theme.font-mono;
             color: Theme.text-3;
-            vertical-alignment: center;
             horizontal-alignment: center;
+            vertical-alignment: center;
+            height: 15px;
         }
-    }
-    if !locked : SpinBox {
-        width: parent.width;
-        height: parent.height;
-        value: root.duty;
-        minimum: root.floor;
-        maximum: root.ceiling;
-        enabled: root.enabled;
-        step-size: 1;
-        edited(v) => { root.stepped(v); }
+
+        HorizontalLayout {
+            height: 22px;
+            spacing: 0px;
+            alignment: center;
+
+            StepGlyphButton {
+                plus: false;
+                enabled: root.enabled && root.duty > root.floor;
+                clicked => { root.stepped(root.duty - 1); }
+            }
+            Text {
+                text: "" + root.duty + "%";
+                min-width: 32px;
+                horizontal-stretch: 1;
+                font-size: 12px;
+                font-family: Theme.font-mono;
+                font-weight: 600;
+                color: root.enabled ? Theme.text : Theme.text-disabled;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            StepGlyphButton {
+                plus: true;
+                enabled: root.enabled && root.duty < root.ceiling;
+                clicked => { root.stepped(root.duty + 1); }
+            }
+        }
     }
 }
 
@@ -62,6 +120,8 @@ export component FanCurveEditor inherits Rectangle {
     in property <int> live-duty: -1;
     in property <bool> readonly: false;
     in property <bool> can-apply: true;
+    in property <bool> custom-active: false;
+    in property <bool> blocked-by-mode: false;
     in property <bool> pending: false;
     in property <bool> dirty: false;
     in property <string> error: "";
@@ -200,6 +260,13 @@ export component FanCurveEditor inherits Rectangle {
         return Math.round(da + (db - da) * (root.live-temp - ta) / (tb - ta));
     }
 
+    pure function live-y-duty() -> int {
+        if root.live-duty >= 0 {
+            return min(root.live-duty, root.max-duty);
+        }
+        return root.duty-at-temp();
+    }
+
     pure function live-x() -> length {
         if root.live-temp < 0 { return 0px; }
         return root.pad-l + (root.live-temp / 100.0) * root.plot-w;
@@ -224,8 +291,14 @@ export component FanCurveEditor inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 Chip {
-                    text: root.readonly ? "只读" : (root.can-apply ? "可编辑" : "仅预览");
-                    level: root.readonly ? 1 : (root.can-apply ? 3 : 1);
+                    text: root.readonly ? "只读"
+                        : !root.can-apply ? (root.blocked-by-mode ? "已接管" : "仅预览")
+                        : root.custom-active ? "生效中"
+                        : "待启用";
+                    level: root.readonly ? 1
+                        : !root.can-apply ? 1
+                        : root.custom-active ? 3
+                        : 0;
                     glyph: root.readonly || !root.can-apply ? "lock" : "";
                 }
             }
@@ -255,11 +328,11 @@ export component FanCurveEditor inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 FluentButton {
-                    text: root.pending ? "应用中" : "应用";
+                    text: root.pending ? "应用中" : (root.dirty || root.custom-active ? "应用" : "启用");
                     compact: true;
                     variant: 1;
                     width: 64px;
-                    enabled: !root.readonly && root.can-apply && !root.pending && root.dirty && root.error == "";
+                    enabled: !root.readonly && root.can-apply && !root.pending && (root.dirty || !root.custom-active) && root.error == "";
                     clicked => { root.apply(); }
                 }
             }
@@ -325,7 +398,7 @@ export component FanCurveEditor inherits Rectangle {
                     root.duty-at(3), root.duty-at(4), root.duty-at(5),
                     root.floor-at(0), root.floor-at(1), root.floor-at(2),
                     root.floor-at(3), root.floor-at(4), root.floor-at(5));
-                fill: Theme.accent.with-alpha(0.12);
+                fill: (root.custom-active || root.dirty) ? Theme.accent.with-alpha(0.12) : Theme.accent.with-alpha(0.05);
                 stroke: transparent;
             }
 
@@ -352,7 +425,9 @@ export component FanCurveEditor inherits Rectangle {
                 commands: root.line-cmd(
                     root.duty-at(0), root.duty-at(1), root.duty-at(2),
                     root.duty-at(3), root.duty-at(4), root.duty-at(5));
-                stroke: root.readonly ? Theme.text-3 : Theme.accent;
+                stroke: root.readonly ? Theme.text-3
+                      : (root.custom-active || root.dirty) ? Theme.accent
+                      : Theme.accent.with-alpha(0.50);
                 stroke-width: 2px;
                 stroke-line-cap: round;
                 stroke-line-join: round;
@@ -369,7 +444,7 @@ export component FanCurveEditor inherits Rectangle {
             }
             if root.live-temp >= 0 && root.ready : Rectangle {
                 x: root.live-x() - 4px;
-                y: root.py(root.duty-at-temp()) - 4px;
+                y: root.py(root.live-y-duty()) - 4px;
                 width: 8px;
                 height: 8px;
                 border-radius: 4px;
@@ -387,7 +462,9 @@ export component FanCurveEditor inherits Rectangle {
                 border-radius: root.locked-at(i) ? 1px : 4px;
                 background: root.locked-at(i) ? Theme.text-3 : Theme.card;
                 border-width: 2px;
-                border-color: root.readonly ? Theme.text-3 : Theme.accent;
+                border-color: root.readonly ? Theme.text-3
+                            : (root.custom-active || root.dirty) ? Theme.accent
+                            : Theme.accent.with-alpha(0.55);
             }
 
             // single crisp X axis temperature labels (clear 5px below plot baseline, °C unit at right)
@@ -439,55 +516,34 @@ export component FanCurveEditor inherits Rectangle {
             }
         }
 
-        // ── 2x3 numeric stepper grid (guaranteed zero clipping at 960px) ────
-        VerticalLayout {
-            spacing: 5px;
-            for row in 2 : HorizontalLayout {
-                spacing: 5px;
-                for col in 3 : Rectangle {
-                    horizontal-stretch: 1;
-                    height: 50px;
-                    background: Theme.card-secondary;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.card-stroke;
+        // ── flat single-row 5-knot inline stepper bar (zero nested boxes) ──
+        HorizontalLayout {
+            height: 44px;
+            spacing: 0px;
 
-                    VerticalLayout {
-                        padding-left: 5px;
-                        padding-right: 5px;
-                        padding-top: 3px;
-                        padding-bottom: 3px;
-                        spacing: 2px;
+            for i in 5 : HorizontalLayout {
+                min-width: 0px;
+                preferred-width: 0px;
+                horizontal-stretch: 1;
+                spacing: 0px;
 
-                        HorizontalLayout {
-                            height: 13px;
-                            Text {
-                                text: "" + root.temp-at(row * 3 + col) + " °C";
-                                font-size: 10px;
-                                font-family: Theme.font-mono;
-                                font-weight: 500;
-                                color: Theme.text-2;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.locked-at(row * 3 + col) ? "固定" : ("≥" + root.floor-at(row * 3 + col) + "%");
-                                font-size: 9px;
-                                font-family: Theme.font-mono;
-                                color: Theme.text-3;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        DutyStepper {
-                            duty: root.duty-at(row * 3 + col);
-                            floor: root.floor-at(row * 3 + col);
-                            ceiling: root.max-duty;
-                            locked: root.locked-at(row * 3 + col);
-                            enabled: !root.readonly && !root.pending;
-                            stepped(v) => { root.edit(row * 3 + col, v); }
-                        }
+                if i > 0 : VerticalLayout {
+                    alignment: center;
+                    width: 1px;
+                    Rectangle {
+                        width: 1px;
+                        height: 26px;
+                        background: Theme.divider;
                     }
+                }
+
+                KnotColumn {
+                    temp: root.temp-at(i + 1);
+                    duty: root.duty-at(i + 1);
+                    floor: root.floor-at(i + 1);
+                    ceiling: root.max-duty;
+                    enabled: !root.readonly && !root.pending && !root.locked-at(i + 1);
+                    stepped(v) => { root.edit(i + 1, v); }
                 }
             }
         }

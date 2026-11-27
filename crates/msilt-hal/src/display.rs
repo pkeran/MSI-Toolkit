@@ -153,8 +153,10 @@ pub(crate) fn inspect(
                 report.color.settable_profile_ids = profiles
                     .iter()
                     .filter_map(|(id, name)| {
-                        (Instant::now() < deadline && read_icm(&dir.join(name)).is_ok())
-                            .then(|| id.clone())
+                        (is_displayable_color_choice(id, &report.color)
+                            && Instant::now() < deadline
+                            && read_icm(&dir.join(name)).is_ok())
+                        .then(|| id.clone())
                     })
                     .collect();
             }
@@ -1063,6 +1065,15 @@ fn resolve_profile<'a>(
     })
 }
 
+pub(crate) fn is_displayable_color_choice(id: &str, color: &ColorReport) -> bool {
+    !id.starts_with("icc_")
+        || color.default_profile_id.as_deref() == Some(id)
+        || color
+            .associated_profile_ids
+            .as_ref()
+            .is_some_and(|ids| ids.iter().any(|item| item == id))
+}
+
 fn profile_id(basename: &str) -> Option<String> {
     if basename
         .chars()
@@ -1429,5 +1440,10 @@ mod tests {
             display_name
         ));
         assert!(!same_profile_name("Vendor Display 1.icc", display_name));
+        let mut color = ColorReport::default();
+        assert!(is_displayable_color_choice("TrueColor_Native_6500", &color));
+        assert!(!is_displayable_color_choice(&id, &color));
+        color.default_profile_id = Some(id.clone());
+        assert!(is_displayable_color_choice(&id, &color));
     }
 }

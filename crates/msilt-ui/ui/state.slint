@@ -197,6 +197,9 @@ export global AppState {
     in-out property <int> override-count: 0;
 
     // ── fan curves ──
+    in-out property <int> fan-mode: -1; // -1 unknown, 0 Auto, 1 Silent, 2 Advanced
+    in-out property <bool> current-mode-custom-saved: false;
+    in-out property <string> custom-fan-modes-summary: "";
     in-out property <[CurvePoint]> cpu-curve: [];
     in-out property <[CurvePoint]> gpu-curve: [];
     in-out property <int> curve-channel: 0;

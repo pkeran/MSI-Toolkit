@@ -57,6 +57,7 @@ mod cmd {
     pub const CURVE_APPLY: i32 = 31;
     pub const CURVE_RESET: i32 = 32;
     pub const CURVE_PRESET: i32 = 33;
+    pub const FAN_AUTO: i32 = 34;
     pub const ZONE_APPLY: i32 = 41;
     pub const ZONE_PRESET: i32 = 42;
     pub const ZONE_SELECT: i32 = 43;
@@ -136,6 +137,7 @@ struct App {
     demo_tick: u64,
     subscriptions: SubscriptionPlan,
     pending_control: Option<(u64, ControlChange)>,
+    pending_fan_reset: Option<u64>,
     config: Option<(u64, msilt_core::AppConfig)>,
     config_pending: Option<u64>,
     theme_override: Option<bool>,
@@ -280,8 +282,14 @@ impl App {
         state.set_connection_text(conn_text.into());
         state.set_demo(self.demo);
         state.set_first_frame_ms(self.first_frame_ms);
-        state.set_curve_apply_pending(self.pending_control.is_some());
-        state.set_request_pending(self.pending_control.is_some() || self.config_pending.is_some());
+        state.set_curve_apply_pending(
+            self.pending_control.is_some() || self.pending_fan_reset.is_some(),
+        );
+        state.set_request_pending(
+            self.pending_control.is_some()
+                || self.pending_fan_reset.is_some()
+                || self.config_pending.is_some(),
+        );
         state.set_config_known(self.config.is_some());
         if let Some((_, config)) = self.config {
             state.set_automation_enabled(config.automation.enabled);
@@ -382,10 +390,17 @@ impl App {
         let recovered = was_unavailable
             && snapshot.status == msilt_core::DaemonStatus::Ready
             && snapshot.ec_write_status == msilt_core::EcWriteStatus::Enabled;
-        let keep_preview = self.curves.iter().any(CurveEditor::is_dirty);
+        let mode_changed =
+            self.snapshot.hardware.performance_mode != snapshot.hardware.performance_mode;
+        let keep_cpu = !mode_changed && self.curves[0].is_dirty();
+        let keep_gpu = !mode_changed && self.curves[1].is_dirty();
         self.snapshot = snapshot;
-        if !keep_preview {
-            self.curves = curves_from(&self.snapshot);
+        let fresh = curves_from(&self.snapshot);
+        if !keep_cpu {
+            self.curves[0] = fresh[0].clone();
+        }
+        if !keep_gpu {
+            self.curves[1] = fresh[1].clone();
         }
         self.connected = true;
         if recovered {
@@ -411,6 +426,7 @@ impl App {
         self.connected = false;
         self.subscriptions = SubscriptionPlan::default();
         self.pending_control = None;
+        self.pending_fan_reset = None;
         self.config_pending = None;
         self.pending_tools_notice = None;
         self.pending_auto_toast = None;
@@ -441,7 +457,11 @@ impl App {
             self.transient(4, "演示模式", "当前为演示模式，不会改动本机硬件。".into());
             return;
         }
-        if self.endpoint.diagnostic || self.pending_control.is_some() || !self.connected {
+        if self.endpoint.diagnostic
+            || self.pending_control.is_some()
+            || self.pending_fan_reset.is_some()
+            || !self.connected
+        {
             return;
         }
         if !view::can_submit(&self.snapshot, &change) {
@@ -459,6 +479,38 @@ impl App {
         match ipc.send(command) {
             Ok(id) => {
                 self.pending_control = Some((id, change));
+                if let Some(ui) = self.ui.upgrade() {
+                    let state = ui.global::<AppState>();
+                    state.set_curve_apply_pending(true);
+                    state.set_request_pending(true);
+                }
+            }
+            Err(error) => self.on_disconnect(format!("发送失败：{error}")),
+        }
+    }
+
+    fn submit_fan_reset(&mut self) {
+        if self.demo {
+            self.transient(4, "演示模式", "当前为演示模式，不会改动本机硬件。".into());
+            return;
+        }
+        if self.endpoint.diagnostic
+            || self.pending_control.is_some()
+            || self.pending_fan_reset.is_some()
+            || !self.connected
+        {
+            return;
+        }
+        let Some(ipc) = self.ipc.as_ref() else {
+            self.transient(2, "后台服务未连接", "请先启动或重新连接后台服务。".into());
+            return;
+        };
+        let command = IpcCommand::ResetFanMode {
+            expected_revision: self.snapshot.revision,
+        };
+        match ipc.send(command) {
+            Ok(id) => {
+                self.pending_fan_reset = Some(id);
                 if let Some(ui) = self.ui.upgrade() {
                     let state = ui.global::<AppState>();
                     state.set_curve_apply_pending(true);
@@ -521,6 +573,10 @@ impl App {
                 let curve = self.curves[channel].curve();
                 let fan_channel = if channel == 0 { FanChannel::Cpu } else { FanChannel::Gpu };
                 self.submit(ControlChange::SetFanCurve { channel: fan_channel, curve });
+                return;
+            }
+            cmd::FAN_AUTO => {
+                self.submit_fan_reset();
                 return;
             }
             cmd::ZONE_PRESET => {
@@ -594,6 +650,7 @@ impl App {
                 self.connected = false;
                 self.subscriptions = SubscriptionPlan::default();
                 self.pending_control = None;
+                self.pending_fan_reset = None;
                 schedule_connect(self.ui.clone(), 0);
                 return;
             }
@@ -662,10 +719,11 @@ impl App {
                         dwm::retheme(hwnd, self.dark);
                     }
                 }
-                if let Some((_, config)) = self.config.as_mut() {
-                    config.theme = target;
-                }
-                if !self.demo {
+                if self.demo {
+                    if let Some((_, config)) = self.config.as_mut() {
+                        config.theme = target;
+                    }
+                } else {
                     self.update_config(|config| config.theme = target);
                     return;
                 }
@@ -881,6 +939,7 @@ impl App {
                                 self.connected = false;
                                 self.subscriptions = SubscriptionPlan::default();
                                 self.pending_control = None;
+                                self.pending_fan_reset = None;
                                 schedule_connect(self.ui.clone(), 1);
                             }
                             Err(err) => {
@@ -1127,7 +1186,13 @@ impl App {
         } else {
             None
         };
-        let control = completed_change.is_some();
+        let completed_fan_reset = if self.pending_fan_reset == Some(id) {
+            self.pending_fan_reset = None;
+            true
+        } else {
+            false
+        };
+        let control = completed_change.is_some() || completed_fan_reset;
         if self.config_pending == Some(id) { self.config_pending = None; }
         match reply {
             IpcResult::Ok { reply } => match reply {
@@ -1157,25 +1222,64 @@ impl App {
                     self.sync_subscriptions();
                 }
                 IpcReply::Snapshot { snapshot } | IpcReply::Applied { snapshot } => {
-                    if control {
+                    if completed_fan_reset {
                         self.curves = curves_from(&snapshot);
+                    } else if control {
+                        match &completed_change {
+                            Some(ControlChange::SetFanCurve { channel: FanChannel::Cpu, .. }) => {
+                                self.curves[0] = curves_from(&snapshot)[0].clone();
+                            }
+                            Some(ControlChange::SetFanCurve { channel: FanChannel::Gpu, .. }) => {
+                                self.curves[1] = curves_from(&snapshot)[1].clone();
+                            }
+                            _ => {
+                                self.curves = curves_from(&snapshot);
+                            }
+                        }
                     }
                     self.apply_snapshot(snapshot);
-                    match completed_change {
-                        Some(ControlChange::SetFanCurve { channel, .. }) => {
-                            let label = match channel {
-                                FanChannel::Cpu => "CPU 风扇曲线已应用",
-                                FanChannel::Gpu => "GPU 风扇曲线已应用",
-                            };
-                            self.transient(3, label, String::new());
-                        }
-                        Some(ControlChange::SetKeyboardLighting { .. }) => {
-                            if let Some(ui) = self.ui.upgrade() {
-                                ui.global::<AppState>().set_keyboard_submit("已应用".into());
+                    if completed_fan_reset {
+                        let detail = self
+                            .snapshot
+                            .hardware
+                            .performance_mode
+                            .map(|mode| format!("「{}」将由主板自动调节风扇转速。", view::mode_name(mode)))
+                            .unwrap_or_default();
+                        self.transient(3, "已恢复自动风扇策略", detail);
+                    } else {
+                        match completed_change {
+                            Some(ControlChange::SetFanCurve { channel, .. }) => {
+                                let label = match channel {
+                                    FanChannel::Cpu => "CPU 风扇曲线已生效",
+                                    FanChannel::Gpu => "GPU 风扇曲线已生效",
+                                };
+                                let detail = self
+                                    .snapshot
+                                    .hardware
+                                    .performance_mode
+                                    .map(|mode| format!("已为「{}」模式启用并记忆自定义曲线。", view::mode_name(mode)))
+                                    .unwrap_or_default();
+                                self.transient(3, label, detail);
                             }
-                            self.transient(3, "键盘灯效已应用", String::new());
+                            Some(ControlChange::SetPerformanceMode { mode }) => {
+                                if self.snapshot.hardware.fan_mode == Some(msilt_core::FanMode::Advanced)
+                                    && self.snapshot.custom_fan_modes.contains(&mode)
+                                {
+                                    self.transient(
+                                        3,
+                                        "已切换性能模式",
+                                        format!("已自动套用「{}」记忆的自定义风扇曲线。", view::mode_name(mode)),
+                                    );
+                                }
+                            }
+                            Some(ControlChange::SetKeyboardLighting { .. }) => {
+                                if let Some(ui) = self.ui.upgrade() {
+                                    ui.global::<AppState>().set_keyboard_submit("已应用".into());
+                                }
+                                self.transient(3, "键盘灯效已应用", String::new());
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                     if let Some(next_target) = self.pending_releases.pop() {
                         let expected_revision = self.snapshot.revision;
@@ -1507,6 +1611,7 @@ fn run(options: Options) -> ExitCode {
         demo_tick: 0,
         subscriptions: SubscriptionPlan::default(),
         pending_control: None,
+        pending_fan_reset: None,
         config: demo.then_some((0, msilt_core::AppConfig::default())),
         config_pending: None,
         theme_override: options.dark,
@@ -1732,7 +1837,7 @@ fn check_layout() -> ExitCode {
     println!("  控件体系        FluentButton · FluentSegmentBar 丝滑滑块 · FluentToggle · SettingsExpander");
     println!("  字体            14/13/12 px（Segoe UI Variable）· 数值 Cascadia Mono");
     println!("  页面            8 个（总览/性能与风扇/显卡与显示/电池与电源/键盘灯效/自动化/监控与提示/系统与工具）");
-    println!("  风扇节点        6 × 2 通道，2x3 步进栅格，下限 {MAX_DUTY_REF}");
+    println!("  风扇节点        6 × 2 通道，单行 5 节点微调栏，下限 {MAX_DUTY_REF}");
     println!("  键盘矩阵        6 × 4 = 24 区等比缩放键盘 + 2D HSV 色盘");
     println!("  渲染后端        纯 CPU 软件渲染（renderer-software + backend-winit，0 GPU 上下文）");
 

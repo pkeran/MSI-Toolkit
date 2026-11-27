@@ -81,6 +81,7 @@ impl IpcClient {
                 IpcCommand::Control { .. }
                     | IpcCommand::SetConfig { .. }
                     | IpcCommand::ReleaseManualOverride { .. }
+                    | IpcCommand::ResetFanMode { .. }
                     | IpcCommand::SetStartup { .. }
                     | IpcCommand::ManageOem { .. }
                     | IpcCommand::SetAutomationRuleEnabled { .. }

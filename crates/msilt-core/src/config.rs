@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::{FanChannel, FanCurve, PerformanceMode};
+
 pub const CONFIG_SCHEMA_VERSION: u16 = 1;
+pub const FAN_PROFILES_SCHEMA_VERSION: u16 = 1;
 pub const MAX_CONFIG_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -118,6 +121,161 @@ impl AppConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModeFanProfile {
+    #[serde(default)]
+    pub custom_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<FanCurve>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<FanCurve>,
+}
+
+impl ModeFanProfile {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(curve) = &self.cpu {
+            curve
+                .validate_shape()
+                .map_err(|_| ConfigError::InvalidField("fanProfiles.cpu"))?;
+        }
+        if let Some(curve) = &self.gpu {
+            curve
+                .validate_shape()
+                .map_err(|_| ConfigError::InvalidField("fanProfiles.gpu"))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FanProfileStore {
+    pub schema_version: u16,
+    #[serde(default)]
+    pub super_battery: ModeFanProfile,
+    #[serde(default)]
+    pub balanced: ModeFanProfile,
+    #[serde(default)]
+    pub extreme_performance: ModeFanProfile,
+}
+
+impl Default for FanProfileStore {
+    fn default() -> Self {
+        Self {
+            schema_version: FAN_PROFILES_SCHEMA_VERSION,
+            super_battery: ModeFanProfile::default(),
+            balanced: ModeFanProfile::default(),
+            extreme_performance: ModeFanProfile::default(),
+        }
+    }
+}
+
+impl FanProfileStore {
+    pub fn parse_json(bytes: &[u8]) -> Result<Self, ConfigError> {
+        if bytes.len() > MAX_CONFIG_BYTES {
+            return Err(ConfigError::TooLarge);
+        }
+        let store: Self = serde_json::from_slice(bytes)?;
+        store.validate()?;
+        Ok(store)
+    }
+
+    pub fn encode_json(&self) -> Result<Vec<u8>, ConfigError> {
+        self.validate()?;
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != FAN_PROFILES_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchema(self.schema_version));
+        }
+        self.super_battery.validate()?;
+        self.balanced.validate()?;
+        self.extreme_performance.validate()?;
+        Ok(())
+    }
+
+    pub const fn supports_custom(mode: PerformanceMode) -> bool {
+        !matches!(mode, PerformanceMode::Silent)
+    }
+
+    pub const fn profile(&self, mode: PerformanceMode) -> Option<&ModeFanProfile> {
+        match mode {
+            PerformanceMode::SuperBattery => Some(&self.super_battery),
+            PerformanceMode::Balanced => Some(&self.balanced),
+            PerformanceMode::ExtremePerformance => Some(&self.extreme_performance),
+            PerformanceMode::Silent => None,
+        }
+    }
+
+    pub fn profile_mut(&mut self, mode: PerformanceMode) -> Option<&mut ModeFanProfile> {
+        match mode {
+            PerformanceMode::SuperBattery => Some(&mut self.super_battery),
+            PerformanceMode::Balanced => Some(&mut self.balanced),
+            PerformanceMode::ExtremePerformance => Some(&mut self.extreme_performance),
+            PerformanceMode::Silent => None,
+        }
+    }
+
+    pub fn active_profile(&self, mode: PerformanceMode) -> Option<ModeFanProfile> {
+        self.profile(mode)
+            .copied()
+            .filter(|profile| profile.custom_enabled && (profile.cpu.is_some() || profile.gpu.is_some()))
+    }
+
+    pub fn custom_modes(&self) -> Vec<PerformanceMode> {
+        [
+            PerformanceMode::SuperBattery,
+            PerformanceMode::Balanced,
+            PerformanceMode::ExtremePerformance,
+        ]
+        .into_iter()
+        .filter(|&mode| self.active_profile(mode).is_some())
+        .collect()
+    }
+
+    pub fn record_custom_curve(
+        &mut self,
+        mode: PerformanceMode,
+        channel: FanChannel,
+        curve: FanCurve,
+        fallback_other: Option<FanCurve>,
+    ) -> bool {
+        let Some(profile) = self.profile_mut(mode) else {
+            return false;
+        };
+        let before = *profile;
+        profile.custom_enabled = true;
+        match channel {
+            FanChannel::Cpu => {
+                profile.cpu = Some(curve);
+                if profile.gpu.is_none() {
+                    profile.gpu = fallback_other;
+                }
+            }
+            FanChannel::Gpu => {
+                profile.gpu = Some(curve);
+                if profile.cpu.is_none() {
+                    profile.cpu = fallback_other;
+                }
+            }
+        }
+        *profile != before
+    }
+
+    pub fn disable_custom(&mut self, mode: PerformanceMode) -> bool {
+        let Some(profile) = self.profile_mut(mode) else {
+            return false;
+        };
+        if !profile.custom_enabled {
+            return false;
+        }
+        profile.custom_enabled = false;
+        true
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("configuration exceeds the size limit")]
@@ -172,6 +330,39 @@ mod tests {
         assert!(matches!(
             AppConfig::parse_json(&vec![b' '; MAX_CONFIG_BYTES + 1]),
             Err(ConfigError::TooLarge),
+        ));
+    }
+
+    #[test]
+    fn fan_profile_store_round_trips_records_pairs_and_validates() {
+        use crate::FanPoint;
+        let curve = |offset: u8| FanCurve {
+            points: [
+                FanPoint { temperature_c: 0, duty_percent: 0 },
+                FanPoint { temperature_c: 48, duty_percent: 36 + offset },
+                FanPoint { temperature_c: 56, duty_percent: 42 + offset },
+                FanPoint { temperature_c: 62, duty_percent: 52 + offset },
+                FanPoint { temperature_c: 70, duty_percent: 76 + offset },
+                FanPoint { temperature_c: 78, duty_percent: 84 + offset },
+            ],
+        };
+        let mut store = FanProfileStore::default();
+        assert!(store.custom_modes().is_empty());
+        assert!(!store.record_custom_curve(PerformanceMode::Silent, FanChannel::Cpu, curve(5), Some(curve(0))));
+        assert!(store.record_custom_curve(PerformanceMode::Balanced, FanChannel::Cpu, curve(10), Some(curve(2))));
+        assert_eq!(store.custom_modes(), vec![PerformanceMode::Balanced]);
+        let bal = store.active_profile(PerformanceMode::Balanced).unwrap();
+        assert_eq!(bal.cpu, Some(curve(10)));
+        assert_eq!(bal.gpu, Some(curve(2)));
+        let encoded = store.encode_json().unwrap();
+        assert_eq!(FanProfileStore::parse_json(&encoded).unwrap(), store);
+        assert!(store.disable_custom(PerformanceMode::Balanced));
+        assert!(!store.disable_custom(PerformanceMode::Balanced));
+        assert!(store.active_profile(PerformanceMode::Balanced).is_none());
+        assert!(store.custom_modes().is_empty());
+        assert!(matches!(
+            FanProfileStore::parse_json(br#"{"schemaVersion":2}"#),
+            Err(ConfigError::UnsupportedSchema(2)),
         ));
     }
 }

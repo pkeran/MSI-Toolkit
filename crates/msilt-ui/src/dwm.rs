@@ -166,6 +166,50 @@ pub fn open_power_settings() {
     unsafe { ShellExecuteW(std::ptr::null_mut(), std::ptr::null(), uri.as_ptr(), std::ptr::null(), std::ptr::null(), 1); }
 }
 
+/// Converts a Unix timestamp in milliseconds to local wall-clock `(hour, minute, second)`.
+pub fn local_hms(unix_ms: u64) -> Option<(u16, u16, u16)> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTimeWin {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millisecond: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FileTimeToLocalFileTime(utc: *const FileTime, local: *mut FileTime) -> i32;
+        fn FileTimeToSystemTime(ft: *const FileTime, st: *mut SystemTimeWin) -> i32;
+    }
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = unix_ms.checked_mul(10_000)?.checked_add(UNIX_EPOCH_TICKS)?;
+    let utc = FileTime {
+        low: ticks as u32,
+        high: (ticks >> 32) as u32,
+    };
+    let mut local = FileTime::default();
+    let mut st = SystemTimeWin::default();
+    unsafe {
+        if FileTimeToLocalFileTime(&utc, &mut local) == 0 {
+            return None;
+        }
+        if FileTimeToSystemTime(&local, &mut st) == 0 {
+            return None;
+        }
+    }
+    Some((st.hour, st.minute, st.second))
+}
+
 /// `SPI_GETCLIENTAREAANIMATION`; false means "reduce motion" is on.
 pub fn client_area_animations() -> bool {
     let mut enabled: i32 = 1;

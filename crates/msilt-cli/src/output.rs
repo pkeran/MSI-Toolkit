@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use msilt_core::ipc::{ErrorCode, FRAME_HEADER_LEN, IpcReply, IpcResponse, IpcResult};
 use msilt_core::{
-    ControlTarget, FanChannel, FanState, ManualOverride, PerformanceMode, PowerSource,
+    ControlTarget, FanChannel, FanMode, FanState, ManualOverride, PerformanceMode, PowerSource,
     SystemSnapshot,
 };
 
@@ -99,6 +99,23 @@ fn write_snapshot(out: &mut impl Write, snapshot: &SystemSnapshot) -> io::Result
     optional(out, "Board", hw.identity.board_id.as_deref(), "")?;
     optional(out, "EC firmware", hw.identity.ec_firmware.as_deref(), "")?;
     optional(out, "Mode", hw.performance_mode.map(mode_arg), "")?;
+    optional(
+        out,
+        "Fan mode",
+        hw.fan_mode.map(|mode| match mode {
+            FanMode::Auto => "auto",
+            FanMode::Silent => "silent",
+            FanMode::Advanced => "advanced",
+        }),
+        "",
+    )?;
+    if !snapshot.custom_fan_modes.is_empty() {
+        choices(
+            out,
+            "Custom fan profiles",
+            snapshot.custom_fan_modes.iter().copied().map(mode_arg),
+        )?;
+    }
     choices(
         out,
         "Supported modes",

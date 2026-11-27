@@ -1,4 +1,7 @@
-use msilt_core::{CapabilityFlags, ControlChange, EcMap, EcWrite, EcWriteStatus, HardwareReport};
+use msilt_core::{
+    CapabilityFlags, ControlChange, EcMap, EcWrite, EcWriteStatus, FanMode, FanProfileStore,
+    HardwareReport, PerformanceMode,
+};
 use msilt_hal::{
     ControlOptions, Diagnostic, DiagnosticKind, ProbeOptions, WindowsHal, ms17s3, wmi_acpi,
 };
@@ -103,20 +106,42 @@ impl EcWritePolicy for Ms17s3EcPolicy {
                 if enabled { ms17s3::COOLER_MASK } else { 0 },
                 ms17s3::COOLER_MASK,
             )],
-            ControlChange::SetPerformanceMode { mode } => {
-                let (shift, fan, battery) = ms17s3::mode_registers(mode);
-                vec![
-                    entry(ms17s3::FAN_MODE, fan, u8::MAX),
-                    entry(ms17s3::SHIFT, shift, u8::MAX),
-                    entry(ms17s3::BATTERY_MODE, battery, ms17s3::BATTERY_MODE_MASK),
-                ]
-            }
+            ControlChange::SetPerformanceMode { mode } => self.mode_register_plan(mode, false),
             _ => self
                 .register_intent(change)
                 .into_iter()
                 .map(|write| (write, u8::MAX))
                 .collect(),
         }
+    }
+
+    fn fan_mode_write(&self, mode: FanMode) -> Option<(EcWrite, u8)> {
+        Some((
+            EcWrite {
+                address: ms17s3::FAN_MODE,
+                value: ms17s3::fan_mode_byte(mode),
+            },
+            u8::MAX,
+        ))
+    }
+
+    fn default_fan_mode(&self, mode: PerformanceMode) -> Option<FanMode> {
+        Some(ms17s3::default_fan_mode(mode))
+    }
+
+    fn mode_register_plan(&self, mode: PerformanceMode, custom_fan: bool) -> Vec<(EcWrite, u8)> {
+        let entry = |address, value, mask| (EcWrite { address, value }, mask);
+        let (shift, default_fan, battery) = ms17s3::mode_registers(mode);
+        let fan = if custom_fan && FanProfileStore::supports_custom(mode) {
+            ms17s3::FAN_MODE_ADVANCED
+        } else {
+            default_fan
+        };
+        vec![
+            entry(ms17s3::FAN_MODE, fan, u8::MAX),
+            entry(ms17s3::SHIFT, shift, u8::MAX),
+            entry(ms17s3::BATTERY_MODE, battery, ms17s3::BATTERY_MODE_MASK),
+        ]
     }
 }
 

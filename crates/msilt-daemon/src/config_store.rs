@@ -13,7 +13,7 @@ use std::{
 };
 
 use msilt_automation::{AutomationRuleSet, RuleEngine};
-use msilt_core::{AppConfig, AutomationPreset, MAX_CONFIG_BYTES};
+use msilt_core::{AppConfig, AutomationPreset, FanProfileStore, MAX_CONFIG_BYTES};
 use windows::{
     Win32::{
         Storage::FileSystem::{
@@ -38,6 +38,7 @@ pub(crate) struct ConfigStore {
     token: Option<Arc<OwnedHandle>>,
     persist_diagnostics: bool,
     preserve_corrupt: bool,
+    preserve_corrupt_fans: bool,
 }
 
 impl ConfigStore {
@@ -53,6 +54,7 @@ impl ConfigStore {
             token: Some(token),
             persist_diagnostics,
             preserve_corrupt: false,
+            preserve_corrupt_fans: false,
         })
     }
 
@@ -63,6 +65,7 @@ impl ConfigStore {
             token: None,
             persist_diagnostics: true,
             preserve_corrupt: false,
+            preserve_corrupt_fans: false,
         }
     }
 
@@ -74,6 +77,18 @@ impl ConfigStore {
                 self.preserve_corrupt = error.kind() == io::ErrorKind::InvalidData;
                 eprintln!("msilt-daemon: app.json could not be loaded: {error}");
                 AppConfig::default()
+            }
+        }
+    }
+
+    pub(crate) fn load_fan_profiles(&mut self) -> FanProfileStore {
+        match self.read_fan_profiles() {
+            Ok(Some(profiles)) => profiles,
+            Ok(None) => FanProfileStore::default(),
+            Err(error) => {
+                self.preserve_corrupt_fans = error.kind() == io::ErrorKind::InvalidData;
+                eprintln!("msilt-daemon: fan-profiles.json could not be loaded: {error}");
+                FanProfileStore::default()
             }
         }
     }
@@ -259,6 +274,49 @@ impl ConfigStore {
         Ok(())
     }
 
+    fn read_fan_profiles(&self) -> io::Result<Option<FanProfileStore>> {
+        let _user = self.impersonate()?;
+        match checked_directory(&self.directory) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        }
+        let path = self.directory.join("fan-profiles.json");
+        let file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(path)
+        {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+            return Err(denied("fan-profiles.json must be a regular file"));
+        }
+        let mut bytes = Vec::new();
+        file.take((MAX_CONFIG_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        FanProfileStore::parse_json(&bytes)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    pub(crate) fn save_fan_profiles(&mut self, profiles: &FanProfileStore) -> io::Result<()> {
+        let bytes = profiles
+            .encode_json()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if bytes.len() > MAX_CONFIG_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan profile configuration exceeds 16 KiB",
+            ));
+        }
+        let _user = self.impersonate()?;
+        self.write_atomic("fan-profiles.json", &bytes, self.preserve_corrupt_fans)?;
+        self.preserve_corrupt_fans = false;
+        Ok(())
+    }
+
     fn ensure_directory(&self) -> io::Result<()> {
         match fs::create_dir(&self.directory) {
             Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
@@ -293,7 +351,8 @@ impl ConfigStore {
         drop(file);
         if preserve_corrupt {
             // A hard link preserves even an oversized original without reading it again.
-            match fs::hard_link(&destination, self.unique("app", "corrupt")) {
+            let prefix = name.strip_suffix(".json").unwrap_or(name);
+            match fs::hard_link(&destination, self.unique(prefix, "corrupt")) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
             }
@@ -373,11 +432,56 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            for name in ["automation.toml", "daemon-diagnostics.log"] {
-                let _ = fs::remove_file(self.0.directory.join(name));
+            for entry in fs::read_dir(&self.0.directory).into_iter().flatten().flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    let _ = fs::remove_file(entry.path());
+                }
             }
             let _ = fs::remove_dir(&self.0.directory);
         }
+    }
+
+    #[test]
+    fn fan_profiles_persist_load_and_preserve_corrupt_files() {
+        use msilt_core::{FanChannel, FanCurve, FanPoint, PerformanceMode};
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.0.load_fan_profiles(), FanProfileStore::default());
+
+        let curve = FanCurve {
+            points: [
+                FanPoint { temperature_c: 0, duty_percent: 0 },
+                FanPoint { temperature_c: 48, duty_percent: 45 },
+                FanPoint { temperature_c: 56, duty_percent: 58 },
+                FanPoint { temperature_c: 62, duty_percent: 72 },
+                FanPoint { temperature_c: 70, duty_percent: 90 },
+                FanPoint { temperature_c: 78, duty_percent: 105 },
+            ],
+        };
+        let mut profiles = FanProfileStore::default();
+        assert!(profiles.record_custom_curve(
+            PerformanceMode::ExtremePerformance,
+            FanChannel::Cpu,
+            curve,
+            None,
+        ));
+        fixture.0.save_fan_profiles(&profiles).unwrap();
+        assert_eq!(fixture.0.load_fan_profiles(), profiles);
+
+        let path = fixture.0.directory.join("fan-profiles.json");
+        fs::write(&path, b"{not valid json").unwrap();
+        assert_eq!(fixture.0.load_fan_profiles(), FanProfileStore::default());
+        fixture.0.save_fan_profiles(&profiles).unwrap();
+        let corrupt_backups = fs::read_dir(&fixture.0.directory)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".corrupt")
+            })
+            .count();
+        assert_eq!(corrupt_backups, 1);
     }
 
     #[test]

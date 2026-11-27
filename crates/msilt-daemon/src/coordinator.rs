@@ -87,6 +87,7 @@ pub(crate) fn run(
     }: Host,
 ) -> io::Result<()> {
     let config = store.load();
+    let fan_profiles = store.load_fan_profiles();
     let engine = if load_stored_rules {
         store.load_automation()
     } else {
@@ -100,11 +101,13 @@ pub(crate) fn run(
         timer,
         store,
         config,
+        fan_profiles,
         config_revision: 0,
         snapshot: Arc::default(),
         observation: None,
         qos: Qos::new(process_qos),
         boost_until: None,
+        pending_fan_restore_at: None,
         executor: Executor::new(&port, inbox.clone(), backends.hal),
         flight: None,
         late_read: None,
@@ -159,17 +162,22 @@ enum Origin {
     Tray,
     Automatic,
     LockLighting,
+    InternalRestore,
 }
 
 impl Origin {
     fn automatic(self) -> bool {
-        matches!(self, Self::Automatic | Self::LockLighting)
+        matches!(
+            self,
+            Self::Automatic | Self::LockLighting | Self::InternalRestore
+        )
     }
 }
 
 enum Command {
     Change(ControlChange),
     Release(ControlTarget),
+    ResetFanMode,
     System(SystemTask),
 }
 struct Job {
@@ -195,6 +203,9 @@ enum Inflight {
         source: Origin,
         change: ControlChange,
         release: bool,
+    },
+    ResetFanMode {
+        source: Origin,
     },
     Sample(u64),
 }
@@ -242,11 +253,13 @@ struct Coordinator {
     timer: DeadlineTimer,
     store: ConfigStore,
     config: AppConfig,
+    fan_profiles: FanProfileStore,
     config_revision: u64,
     snapshot: Arc<SystemSnapshot>,
     observation: Option<Observation>,
     qos: Qos,
     boost_until: Option<Instant>,
+    pending_fan_restore_at: Option<Instant>,
     executor: Executor,
     flight: Option<Flight>,
     late_read: Option<LateRead>,
@@ -545,6 +558,15 @@ impl Coordinator {
                 });
                 return;
             }
+            IpcCommand::ResetFanMode { expected_revision } => {
+                self.enqueue(Job {
+                    source,
+                    expected: expected_revision,
+                    until,
+                    command: Command::ResetFanMode,
+                });
+                return;
+            }
         };
         self.pipe.reply(peer, id, reply, false);
     }
@@ -723,7 +745,9 @@ impl Coordinator {
         }
         if let Some(flight) = &self.flight {
             let source = match flight.kind {
-                Inflight::Control { source, .. } | Inflight::System { source, .. } => Some(source),
+                Inflight::Control { source, .. }
+                | Inflight::ResetFanMode { source }
+                | Inflight::System { source, .. } => Some(source),
                 _ => None,
             };
             if let Some(Origin::Pipe { peer, .. }) = source {
@@ -765,6 +789,27 @@ impl Coordinator {
         }
         if !self.active() || self.quarantine {
             return;
+        }
+        if self
+            .pending_fan_restore_at
+            .is_some_and(|at| now >= at)
+        {
+            self.pending_fan_restore_at = None;
+            if self.snapshot.hardware.cooler_boost != Some(true) {
+                if let Some(mode) = self.snapshot.hardware.performance_mode {
+                    if self.fan_profiles.active_profile(mode).is_some()
+                        && self.submit_control(
+                            Origin::InternalRestore,
+                            ControlChange::SetPerformanceMode { mode },
+                            false,
+                            now,
+                            None,
+                        )
+                    {
+                        return;
+                    }
+                }
+            }
         }
         while let Some(change) = self
             .leases
@@ -875,6 +920,9 @@ impl Coordinator {
         let source = request.source;
         let (change, release) = match request.command {
             Command::System(_) => unreachable!("system work dispatched separately"),
+            Command::ResetFanMode => {
+                return self.begin_reset_fan_mode(source, now, Some(request.until));
+            }
             Command::Change(change) => (change, false),
             Command::Release(target) => match self.leases.manual_destination(target) {
                 Some(change) => (change, true),
@@ -892,7 +940,61 @@ impl Coordinator {
             self.control_reply(source, Err(error));
             return false;
         }
+        if matches!(
+            change,
+            ControlChange::SetPerformanceMode { .. }
+                | ControlChange::SetFanCurve { .. }
+                | ControlChange::SetCoolerBoost { enabled: true }
+        ) {
+            self.pending_fan_restore_at = None;
+        }
         self.submit_control(source, change, release, now, Some(request.until))
+    }
+
+    fn begin_reset_fan_mode(
+        &mut self,
+        source: Origin,
+        now: Instant,
+        until: Option<Instant>,
+    ) -> bool {
+        if self.snapshot.ec_write_status != EcWriteStatus::Enabled {
+            let error = match self.snapshot.ec_write_status {
+                EcWriteStatus::ReadOnlyFirmware => ErrorCode::ReadOnlyFirmware,
+                EcWriteStatus::ConflictDetected => ErrorCode::ConflictDetected,
+                EcWriteStatus::RecoveryRequired => ErrorCode::RecoveryRequired,
+                EcWriteStatus::UnverifiedMapping => ErrorCode::WriteNotAllowed,
+                EcWriteStatus::Unavailable | EcWriteStatus::Enabled => ErrorCode::Unsupported,
+            };
+            self.control_reply(source, Err(error));
+            return false;
+        }
+        if !self.snapshot.writable.contains(CapabilityFlags::FAN_CURVE)
+            || self.snapshot.hardware.performance_mode.is_none()
+        {
+            self.control_reply(source, Err(ErrorCode::Unsupported));
+            return false;
+        }
+        if self.snapshot.hardware.cooler_boost == Some(true) {
+            self.control_reply(source, Err(ErrorCode::ConflictDetected));
+            return false;
+        }
+        self.pending_fan_restore_at = None;
+        if !source.automatic() {
+            self.qos.set_interactive(true);
+        }
+        let work = Work::ResetFanMode {
+            expected: self.snapshot.hardware.identity.clone(),
+        };
+        if !self.submit(
+            work,
+            Inflight::ResetFanMode { source },
+            now + CONTROL_BUDGET,
+            until,
+        ) {
+            self.control_reply(source, Err(ErrorCode::BackendUnavailable));
+            return false;
+        }
+        true
     }
 
     fn begin_system(
@@ -970,10 +1072,15 @@ impl Coordinator {
         if !source.automatic() {
             self.qos.set_interactive(true);
         }
+        let fan_profile = match &change {
+            ControlChange::SetPerformanceMode { mode } => self.fan_profiles.active_profile(*mode),
+            _ => None,
+        };
         let work = Work::Apply {
             change: change.clone(),
             expected: self.snapshot.hardware.identity.clone(),
             lock_lighting: matches!(source, Origin::LockLighting),
+            fan_profile,
         };
         if !self.submit(
             work,
@@ -1155,18 +1262,47 @@ impl Coordinator {
                     self.observation = observation;
                 }
                 if result.is_ok() {
-                    if release {
-                        self.leases.release_manual(target, Some(&change));
-                    } else if source.automatic() {
-                        self.leases.auto_applied(&change, before);
-                    } else {
-                        let until = match self.config.automation.manual_override {
-                            ManualOverride::Timed { seconds } => {
-                                Some(self.now_ms(now).saturating_add(u64::from(seconds) * 1000))
+                    if !matches!(source, Origin::InternalRestore) {
+                        if release {
+                            self.leases.release_manual(target, Some(&change));
+                        } else if source.automatic() {
+                            self.leases.auto_applied(&change, before);
+                        } else {
+                            let until = match self.config.automation.manual_override {
+                                ManualOverride::Timed { seconds } => {
+                                    Some(self.now_ms(now).saturating_add(u64::from(seconds) * 1000))
+                                }
+                                ManualOverride::UntilReleased => None,
+                            };
+                            self.leases.manual_applied(target, before, until);
+                        }
+                    }
+                    if same_epoch && !source.automatic() && !release {
+                        if let ControlChange::SetFanCurve { channel, curve } = change {
+                            let mode = self
+                                .observation
+                                .as_ref()
+                                .and_then(|obs| obs.report.state.performance_mode);
+                            let other_curve = self.observation.as_ref().and_then(|obs| match channel {
+                                FanChannel::Cpu => obs.report.state.gpu_fan.map(|f| f.curve),
+                                FanChannel::Gpu => obs.report.state.cpu_fan.map(|f| f.curve),
+                            });
+                            if let Some(mode) = mode {
+                                if self
+                                    .fan_profiles
+                                    .record_custom_curve(mode, channel, curve, other_curve)
+                                    && !self.readonly
+                                {
+                                    if let Err(error) =
+                                        self.store.save_fan_profiles(&self.fan_profiles)
+                                    {
+                                        self.store.diagnostic(&format!(
+                                            "could not save fan-profiles.json: {error}"
+                                        ));
+                                    }
+                                }
                             }
-                            ManualOverride::UntilReleased => None,
-                        };
-                        self.leases.manual_applied(target, before, until);
+                        }
                     }
                 }
                 if result.is_err() && matches!(source, Origin::LockLighting) {
@@ -1174,6 +1310,32 @@ impl Coordinator {
                 }
                 if boost_released {
                     self.leases.reconcile_observation();
+                    if same_epoch {
+                        if let Some(obs) = &self.observation {
+                            if let Some(mode) = obs.report.state.performance_mode {
+                                if let Some(profile) = self.fan_profiles.active_profile(mode) {
+                                    let needs_restore =
+                                        obs.report.state.fan_mode != Some(FanMode::Advanced)
+                                            || profile.cpu.is_some_and(|c| {
+                                                obs.report
+                                                    .state
+                                                    .cpu_fan
+                                                    .is_none_or(|f| f.curve != c)
+                                            })
+                                            || profile.gpu.is_some_and(|g| {
+                                                obs.report
+                                                    .state
+                                                    .gpu_fan
+                                                    .is_none_or(|f| f.curve != g)
+                                            });
+                                    if needs_restore {
+                                        self.pending_fan_restore_at =
+                                            Some(now + Duration::from_millis(300));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 self.publish();
                 let result = result.and(if same_epoch {
@@ -1182,19 +1344,70 @@ impl Coordinator {
                     Err(ErrorCode::ConflictDetected)
                 });
                 self.control_reply(source, result);
-                self.engine_event(AutomationEvent::ControlSettled { target, result });
-                if result.is_ok() {
-                    if source.automatic() {
-                        self.notify(OsdKind::AutomationApplied);
-                    } else if let Some(kind) = osd_kind(target) {
-                        self.notify(kind);
+                if !matches!(source, Origin::InternalRestore) {
+                    self.engine_event(AutomationEvent::ControlSettled { target, result });
+                    if result.is_ok() {
+                        if source.automatic() {
+                            self.notify(OsdKind::AutomationApplied);
+                        } else if let Some(kind) = osd_kind(target) {
+                            self.notify(kind);
+                        }
                     }
                 }
+            }
+            (
+                Inflight::ResetFanMode { source },
+                Completion::Applied(Applied {
+                    result,
+                    observation,
+                    ..
+                }),
+            ) => {
+                if result == Err(ErrorCode::TimedOut) {
+                    self.store.diagnostic(
+                        "fan mode reset transaction timed out; entering fail-closed quarantine",
+                    );
+                    self.quarantine = true;
+                }
+                self.ec_recovery |= matches!(
+                    result,
+                    Err(ErrorCode::TimedOut
+                        | ErrorCode::RollbackFailed
+                        | ErrorCode::RecoveryRequired)
+                );
+                if same_epoch {
+                    self.observation = observation;
+                }
+                if result.is_ok() && same_epoch {
+                    if let Some(mode) = self
+                        .observation
+                        .as_ref()
+                        .and_then(|obs| obs.report.state.performance_mode)
+                    {
+                        if self.fan_profiles.disable_custom(mode) && !self.readonly {
+                            if let Err(error) = self.store.save_fan_profiles(&self.fan_profiles) {
+                                self.store.diagnostic(&format!(
+                                    "could not save fan-profiles.json: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                self.publish();
+                let result = result.and(if same_epoch {
+                    Ok(())
+                } else {
+                    Err(ErrorCode::ConflictDetected)
+                });
+                self.control_reply(source, result);
             }
             (Inflight::Control { source, .. }, Completion::Skipped(error)) => {
                 if matches!(source, Origin::LockLighting) {
                     self.release_lock_lighting();
                 }
+                self.control_reply(source, Err(error))
+            }
+            (Inflight::ResetFanMode { source }, Completion::Skipped(error)) => {
                 self.control_reply(source, Err(error))
             }
             (Inflight::Inspect, Completion::Skipped(_)) => {
@@ -1273,10 +1486,25 @@ impl Coordinator {
                     ErrorCode::TimedOut
                 };
                 self.control_reply(source, Err(error));
-                self.engine_event(AutomationEvent::ControlSettled {
-                    target: change.target(),
-                    result: Err(error),
-                });
+                if !matches!(source, Origin::InternalRestore) {
+                    self.engine_event(AutomationEvent::ControlSettled {
+                        target: change.target(),
+                        result: Err(error),
+                    });
+                }
+            }
+            Inflight::ResetFanMode { source } => {
+                self.store.diagnostic(
+                    "watchdog: fan mode reset transaction exceeded budget; entering quarantine",
+                );
+                self.quarantine = true;
+                self.ec_recovery |= !canceled;
+                let error = if canceled {
+                    ErrorCode::Busy
+                } else {
+                    ErrorCode::TimedOut
+                };
+                self.control_reply(source, Err(error));
             }
         }
         self.observation = None;
@@ -1305,6 +1533,7 @@ impl Coordinator {
         let mut snapshot = SystemSnapshot {
             revision: old.revision,
             manual_overrides: self.leases.manual_targets().collect(),
+            custom_fan_modes: self.fan_profiles.custom_modes(),
             ..Default::default()
         };
         if let Some(observed) = &self.observation {
@@ -1551,6 +1780,7 @@ impl Coordinator {
             self.pipe.next_deadline(),
             self.telemetry.next,
             self.inspect_retry_at,
+            self.pending_fan_restore_at,
             self.topology_due,
             self.boost_until,
             self.qos.trim_deadline(),
@@ -1716,6 +1946,8 @@ impl Coordinator {
                         Inflight::Control {
                             source: Origin::Pipe { .. } | Origin::Tray,
                             ..
+                        } | Inflight::ResetFanMode {
+                            source: Origin::Pipe { .. } | Origin::Tray,
                         }
                     )
                 }),
@@ -1726,6 +1958,7 @@ impl Coordinator {
                 && self.flight.is_none()
                 && self.late_read.is_none()
                 && self.inspect_retry_at.is_none()
+                && self.pending_fan_restore_at.is_none()
                 && self.queue.is_empty()
                 && self.greetings.is_empty()
                 && self.topology_due.is_none()

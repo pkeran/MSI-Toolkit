@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 
 use msilt_core::{
     AutomationRuleView, CapabilityFlags, ControlChange, DaemonStatus, EcWriteStatus, FanChannel,
-    GpuMuxMode, OemInventory, OemItemKind, OemPackageId, OemScope, PerformanceMode, PowerSource,
-    StartupMode, StartupStatus, SystemSnapshot, TelemetrySample,
+    FanMode, GpuMuxMode, OemInventory, OemItemKind, OemPackageId, OemScope, PerformanceMode,
+    PowerSource, StartupMode, StartupStatus, SystemSnapshot, TelemetrySample,
 };
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
 
@@ -44,10 +44,7 @@ impl History {
         push_bounded(&mut self.gpu, sample.gpu_temperature_c);
         self.last_unix_ms = sample.sampled_at_unix_ms;
         let row = SampleRow {
-            time: {
-                let seconds = sample.sampled_at_unix_ms / 1000;
-                format!("{:02}:{:02}:{:02}", seconds / 3600 % 24, seconds / 60 % 60, seconds % 60).into()
-            },
+            time: format_sample_time(sample.sampled_at_unix_ms).into(),
             cpu: opt_text(sample.cpu_temperature_c, "°C"),
             gpu: opt_text(sample.gpu_temperature_c, "°C"),
             cpu_rpm: opt_text(sample.cpu_fan_rpm, ""),
@@ -69,6 +66,14 @@ impl History {
         self.gpu.clear();
         self.samples.clear();
     }
+}
+
+fn format_sample_time(unix_ms: u64) -> String {
+    if let Some((h, m, s)) = crate::dwm::local_hms(unix_ms) {
+        return format!("{h:02}:{m:02}:{s:02}");
+    }
+    let seconds = unix_ms / 1000;
+    format!("{:02}:{:02}:{:02}", seconds / 3600 % 24, seconds / 60 % 60, seconds % 60)
 }
 
 fn push_bounded(queue: &mut VecDeque<Option<i16>>, value: Option<i16>) {
@@ -133,6 +138,8 @@ pub fn can_submit(snapshot: &SystemSnapshot, change: &ControlChange) -> bool {
         ControlChange::SetFanCurve { channel, curve } => {
             let fan = match channel { FanChannel::Cpu => h.cpu_fan.as_ref(), FanChannel::Gpu => h.gpu_fan.as_ref() };
             snapshot.ec_write_status == EcWriteStatus::Enabled
+                && h.cooler_boost != Some(true)
+                && h.performance_mode != Some(PerformanceMode::Silent)
                 && fan.and_then(|f| f.limits.as_ref()).is_some_and(|limits| curve.validate_with_limits(limits).is_ok())
         }
         ControlChange::SetCoolerBoost { .. } => true,
@@ -146,8 +153,16 @@ pub fn choice_index<T: PartialEq>(choices: &[T], current: Option<&T>) -> i32 {
     current.and_then(|value| choices.iter().position(|item| item == value)).map_or(-1, |index| index as i32)
 }
 
-fn mode_name(mode: PerformanceMode) -> &'static str {
+pub fn mode_name(mode: PerformanceMode) -> &'static str {
     match mode { PerformanceMode::SuperBattery => "超级省电", PerformanceMode::Silent => "静音", PerformanceMode::Balanced => "平衡", PerformanceMode::ExtremePerformance => "极致性能" }
+}
+
+fn fan_mode_index(mode: FanMode) -> i32 {
+    match mode {
+        FanMode::Auto => 0,
+        FanMode::Silent => 1,
+        FanMode::Advanced => 2,
+    }
 }
 
 fn mode_index(mode: PerformanceMode) -> i32 {
@@ -229,6 +244,19 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
     state.set_board_id(hardware.identity.board_id.clone().unwrap_or_else(|| "—".into()).into());
     state.set_ec_firmware(hardware.identity.ec_firmware.clone().unwrap_or_else(|| "—".into()).into());
     state.set_performance_mode(hardware.performance_mode.map_or(-1, mode_index));
+    state.set_fan_mode(hardware.fan_mode.map_or(-1, fan_mode_index));
+    state.set_current_mode_custom_saved(
+        hardware
+            .performance_mode
+            .is_some_and(|mode| snapshot.custom_fan_modes.contains(&mode)),
+    );
+    let saved_summary: Vec<&'static str> = snapshot
+        .custom_fan_modes
+        .iter()
+        .copied()
+        .map(mode_name)
+        .collect();
+    state.set_custom_fan_modes_summary(saved_summary.join(" · ").into());
     sync_vec_model(
         state.get_supported_modes(),
         hardware.supported_performance_modes.iter().copied().map(mode_index).collect::<Vec<i32>>(),
@@ -662,8 +690,10 @@ mod tests {
             history.push(&sample(Some(i as i16), Some(0)));
         }
         assert_eq!(history.samples.len(), SAMPLE_ROWS);
-        assert_eq!(history.samples[0].time.as_str(), "00:00:00");
-        assert_eq!(history.samples[SAMPLE_ROWS - 1].time.as_str(), "00:00:00");
+        let expected_time = format_sample_time(1);
+        assert_eq!(expected_time.len(), 8);
+        assert_eq!(history.samples[0].time.as_str(), expected_time);
+        assert_eq!(history.samples[SAMPLE_ROWS - 1].time.as_str(), expected_time);
         assert_eq!(history.samples[0].cpu.as_str(), "44 °C");
     }
 
@@ -700,5 +730,21 @@ mod tests {
             assert_eq!(mode_index(mode), index);
         }
         assert!(mode_from_index(9).is_none());
+    }
+
+    #[test]
+    fn fan_curve_submit_is_blocked_in_silent_mode_and_cooler_boost() {
+        let mut snapshot = crate::demo::snapshot();
+        let curve = snapshot.hardware.cpu_fan.unwrap().curve;
+        let change = ControlChange::SetFanCurve {
+            channel: FanChannel::Cpu,
+            curve,
+        };
+        assert!(can_submit(&snapshot, &change));
+        snapshot.hardware.performance_mode = Some(PerformanceMode::Silent);
+        assert!(!can_submit(&snapshot, &change));
+        snapshot.hardware.performance_mode = Some(PerformanceMode::Balanced);
+        snapshot.hardware.cooler_boost = Some(true);
+        assert!(!can_submit(&snapshot, &change));
     }
 }

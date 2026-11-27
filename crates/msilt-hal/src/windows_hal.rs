@@ -388,6 +388,9 @@ fn hardware_state(
                 state.cooler_boost = Some(raw & ms17s3::COOLER_MASK != 0);
                 register(CapabilityFlags::COOLER_BOOST, true);
             }
+            if let Some(fan_mode) = bytes.scalar(ms17s3::FAN_MODE).and_then(ms17s3::decode_fan_mode) {
+                state.fan_mode = Some(fan_mode);
+            }
             if let Some(mode) = bytes
                 .scalar(ms17s3::SHIFT)
                 .zip(bytes.scalar(ms17s3::FAN_MODE))
@@ -485,8 +488,11 @@ fn hardware_state(
             .display
             .color
             .installed_profile_ids
-            .clone()
-            .unwrap_or_default();
+            .iter()
+            .flatten()
+            .filter(|id| display::is_displayable_color_choice(id, &report.display.color))
+            .cloned()
+            .collect();
     }
     HardwareReport {
         state,
@@ -532,7 +538,9 @@ fn panel_name(panel: &display::InternalPanel) -> Option<String> {
 fn mux_indicator(raw: u8, panel_vendor: Option<u16>) -> Option<GpuMuxMode> {
     match (raw, panel_vendor) {
         (0, Some(0x8086)) => Some(GpuMuxMode::Hybrid),
-        (1, Some(0x10DE)) => Some(GpuMuxMode::Discrete),
+        // MS-17S3 routes MUX control via UEFI MsiDCVarData, leaving EC 0xD1 at 0
+        // even when CCD proves the internal panel is directly driven by NVIDIA.
+        (0 | 1, Some(0x10DE)) => Some(GpuMuxMode::Discrete),
         (2, Some(0x8086)) => Some(GpuMuxMode::Integrated),
         _ => None,
     }
@@ -746,8 +754,9 @@ mod tests {
         assert_eq!(detail.charging, Some(false));
         pack.capacity_unit = CapacityUnit::Relative;
         assert_eq!(battery_detail(&pack).designed_capacity_mwh, None);
-        assert_eq!(mux_indicator(0, Some(0x10DE)), None);
+        assert_eq!(mux_indicator(0, Some(0x10DE)), Some(GpuMuxMode::Discrete));
         assert_eq!(mux_indicator(1, Some(0x10DE)), Some(GpuMuxMode::Discrete));
+        assert_eq!(mux_indicator(2, Some(0x10DE)), None);
         assert_eq!(mux_indicator(0xFF, Some(0x8086)), None);
     }
 }

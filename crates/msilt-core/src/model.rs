@@ -121,6 +121,14 @@ pub enum FanChannel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FanMode {
+    Auto,
+    Silent,
+    Advanced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ControlTarget {
@@ -306,6 +314,8 @@ pub struct HardwareState {
     pub identity: HardwareIdentity,
     pub supported_performance_modes: Vec<PerformanceMode>,
     pub performance_mode: Option<PerformanceMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_mode: Option<FanMode>,
     pub cpu_fan: Option<FanState>,
     pub gpu_fan: Option<FanState>,
     pub cooler_boost: Option<bool>,
@@ -338,6 +348,8 @@ pub struct SystemSnapshot {
     pub writable: CapabilityFlags,
     pub hardware: HardwareState,
     pub manual_overrides: Vec<ControlTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_fan_modes: Vec<PerformanceMode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

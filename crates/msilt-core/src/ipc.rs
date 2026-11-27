@@ -74,6 +74,7 @@ pub enum IpcCommand {
     SetSubscriptions { topics: Subscriptions },
     Control { expected_revision: u64, change: ControlChange },
     ReleaseManualOverride { expected_revision: u64, target: ControlTarget },
+    ResetFanMode { expected_revision: u64 },
     GetConfig {},
     SetConfig { expected_revision: u64, config: AppConfig },
     GetSystemTools {},
@@ -398,5 +399,14 @@ mod tests {
         assert_eq!(request.queue_ttl_ms(), Ok(DEFAULT_QUEUE_TTL_MS));
         request.id = 0;
         assert_eq!(request.queue_ttl_ms(), Err(ErrorCode::InvalidRequest));
+        let reset = IpcMessage::Request(IpcRequest {
+            id: 5,
+            ttl_ms: None,
+            command: IpcCommand::ResetFanMode { expected_revision: 12 },
+        });
+        assert_eq!(
+            encode_frame(&reset).unwrap(),
+            frame_bytes(br#"{"type":"request","message":{"id":5,"command":{"op":"resetFanMode","expectedRevision":12}}}"#)
+        );
     }
 }

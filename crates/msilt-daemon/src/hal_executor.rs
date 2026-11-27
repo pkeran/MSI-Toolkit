@@ -35,6 +35,15 @@ pub trait EcWritePolicy {
             .map(|write| (write, u8::MAX))
             .collect()
     }
+    fn fan_mode_write(&self, _mode: FanMode) -> Option<(EcWrite, u8)> {
+        None
+    }
+    fn default_fan_mode(&self, _mode: PerformanceMode) -> Option<FanMode> {
+        None
+    }
+    fn mode_register_plan(&self, mode: PerformanceMode, _custom_fan: bool) -> Vec<(EcWrite, u8)> {
+        self.register_plan(&ControlChange::SetPerformanceMode { mode })
+    }
 }
 
 pub struct HalBackends {
@@ -118,10 +127,21 @@ impl HalBackends {
         })
     }
 
+    #[cfg(test)]
     fn apply(
         &mut self,
         change: &ControlChange,
         expected: &HardwareIdentity,
+        permit: impl FnMut() -> bool,
+    ) -> Applied {
+        self.apply_with_fan_profile(change, expected, None, permit)
+    }
+
+    fn apply_with_fan_profile(
+        &mut self,
+        change: &ControlChange,
+        expected: &HardwareIdentity,
+        fan_profile: Option<ModeFanProfile>,
         mut permit: impl FnMut() -> bool,
     ) -> Applied {
         let before = match self.inspect() {
@@ -140,10 +160,41 @@ impl HalBackends {
             return Applied::failure(error, Some(before));
         }
         let original = observed(&before.report.state, change.target());
+        let effective_curves = resolve_mode_fan_curves(&before, change, fan_profile);
+        let expected_fan_mode = match change {
+            ControlChange::SetFanCurve { .. } => self
+                .ec
+                .as_ref()
+                .and_then(|policy| policy.fan_mode_write(FanMode::Advanced).map(|_| FanMode::Advanced)),
+            ControlChange::SetPerformanceMode { mode } => {
+                if effective_curves.is_some() {
+                    self.ec
+                        .as_ref()
+                        .and_then(|policy| policy.fan_mode_write(FanMode::Advanced).map(|_| FanMode::Advanced))
+                } else {
+                    self.ec
+                        .as_ref()
+                        .and_then(|policy| policy.default_fan_mode(*mode))
+                }
+            }
+            _ => None,
+        };
+        let fan_mode_matches = |state: &HardwareState| {
+            expected_fan_mode.is_none_or(|expected_mode| state.fan_mode == Some(expected_mode))
+        };
+        let curves_match = |state: &HardwareState| match effective_curves {
+            Some((cpu, gpu)) => {
+                cpu.is_none_or(|curve| state.cpu_fan.is_some_and(|fan| fan.curve == curve))
+                    && gpu.is_none_or(|curve| state.gpu_fan.is_some_and(|fan| fan.curve == curve))
+            }
+            None => true,
+        };
         // Keyboard HID has no hardware readback; always transmit explicit lighting frames
         // so re-applying after a Fn hotkey or external reset actually updates the LEDs.
         if !matches!(change, ControlChange::SetKeyboardLighting { .. })
             && original.as_ref() == Some(change)
+            && fan_mode_matches(&before.report.state)
+            && curves_match(&before.report.state)
         {
             if !permit() {
                 return Applied::failure(ErrorCode::NotReady, Some(before));
@@ -156,7 +207,7 @@ impl HalBackends {
         }
         let ec = is_ec(change.target());
         let result = if ec {
-            self.apply_ec(&before.report, change, permit)
+            self.apply_ec(&before.report, change, effective_curves, permit)
         } else if permit() {
             self.apply_platform(change)
         } else {
@@ -194,7 +245,9 @@ impl HalBackends {
             }
         };
         let verified = &after.report.state.identity == expected
-            && observed(&after.report.state, change.target()).as_ref() == Some(change);
+            && observed(&after.report.state, change.target()).as_ref() == Some(change)
+            && fan_mode_matches(&after.report.state)
+            && curves_match(&after.report.state);
         let result = result.and(if verified {
             Ok(())
         } else {
@@ -208,6 +261,119 @@ impl HalBackends {
         Applied {
             result,
             before: original,
+            observation: Some(after),
+        }
+    }
+
+    fn reset_fan_mode(
+        &mut self,
+        expected: &HardwareIdentity,
+        mut permit: impl FnMut() -> bool,
+    ) -> Applied {
+        let before = match self.inspect() {
+            Ok(observation) => observation,
+            Err(error) => return Applied::failure(error.into(), None),
+        };
+        if &before.report.state.identity != expected {
+            return Applied::failure(ErrorCode::ConflictDetected, Some(before));
+        }
+        if before.ec_status != EcWriteStatus::Enabled {
+            return Applied::failure(ec_error(before.ec_status), Some(before));
+        }
+        if !before.writable.contains(CapabilityFlags::FAN_CURVE) {
+            return Applied::failure(ErrorCode::Unsupported, Some(before));
+        }
+        if before.report.state.cooler_boost == Some(true) {
+            return Applied::failure(ErrorCode::ConflictDetected, Some(before));
+        }
+        let Some(mode) = before.report.state.performance_mode else {
+            return Applied::failure(ErrorCode::Unsupported, Some(before));
+        };
+        let Some((target_fan_mode, register)) = self.ec.as_ref().and_then(|policy| {
+            let target_mode = policy.default_fan_mode(mode)?;
+            let reg = policy.fan_mode_write(target_mode)?;
+            Some((target_mode, reg))
+        }) else {
+            return Applied::failure(ErrorCode::Unsupported, Some(before));
+        };
+        if before.report.state.fan_mode == Some(target_fan_mode) {
+            if !permit() {
+                return Applied::failure(ErrorCode::NotReady, Some(before));
+            }
+            return Applied {
+                result: Ok(()),
+                before: None,
+                observation: Some(before),
+            };
+        }
+        let result = (|| -> Result<(), ErrorCode> {
+            let policy = self.ec.as_mut().ok_or(ErrorCode::Unsupported)?;
+            let map = policy.authorize(&before.report).map_err(ec_error)?;
+            let mut guard = WriteGuard::new(map, &before.report.state.identity);
+            self.governor
+                .admit(ControlTarget::FanCurve { channel: FanChannel::Cpu }, Instant::now())?;
+            let result = guarded_register_plan(
+                &mut guard,
+                self.device.as_mut(),
+                map,
+                &[register],
+                &mut permit,
+            );
+            self.recovery |= guard.recovery_required()
+                || matches!(
+                    result,
+                    Err(ErrorCode::TimedOut
+                        | ErrorCode::RecoveryRequired
+                        | ErrorCode::RollbackFailed)
+                );
+            result
+        })();
+        if result == Err(ErrorCode::TimedOut) {
+            self.recovery = true;
+            return Applied::failure(ErrorCode::TimedOut, None);
+        }
+        if matches!(
+            result,
+            Err(ErrorCode::Busy
+                | ErrorCode::NotReady
+                | ErrorCode::Unsupported
+                | ErrorCode::ReadOnlyFirmware
+                | ErrorCode::WriteNotAllowed
+                | ErrorCode::DeniedWrite
+                | ErrorCode::ConflictDetected)
+        ) {
+            return Applied::failure(result.expect_err("filtered error"), Some(before));
+        }
+        let mut after = match self.inspect() {
+            Ok(observation) => observation,
+            Err(error) => {
+                self.recovery = true;
+                return Applied::failure(
+                    if error == HalError::TimedOut {
+                        ErrorCode::TimedOut
+                    } else {
+                        result.err().unwrap_or(ErrorCode::BackendUnavailable)
+                    },
+                    None,
+                );
+            }
+        };
+        let verified = &after.report.state.identity == expected
+            && after.report.state.performance_mode == Some(mode)
+            && after.report.state.fan_mode == Some(target_fan_mode);
+        let result = result.and(if verified {
+            Ok(())
+        } else {
+            Err(ErrorCode::VerificationFailed)
+        });
+        if !verified && result == Err(ErrorCode::VerificationFailed) || self.recovery {
+            self.recovery = true;
+            after.ec_status = EcWriteStatus::RecoveryRequired;
+            after.writable = mask(after.writable, !EC_BITS);
+        }
+        Applied {
+            result,
+            before: None,
             observation: Some(after),
         }
     }
@@ -249,28 +415,174 @@ impl HalBackends {
         &mut self,
         report: &HardwareReport,
         change: &ControlChange,
+        effective_curves: Option<(Option<FanCurve>, Option<FanCurve>)>,
         mut permit: impl FnMut() -> bool,
     ) -> Result<(), ErrorCode> {
         let policy = self.ec.as_mut().ok_or(ErrorCode::Unsupported)?;
-        let registers = policy.register_plan(change);
+        let registers = match change {
+            ControlChange::SetPerformanceMode { mode } => {
+                policy.mode_register_plan(*mode, effective_curves.is_some())
+            }
+            _ => policy.register_plan(change),
+        };
+        let fan_activation = match change {
+            ControlChange::SetFanCurve { .. } => policy.fan_mode_write(FanMode::Advanced),
+            _ => None,
+        };
         let map = policy.authorize(report).map_err(ec_error)?;
         let mut guard = WriteGuard::new(map, &report.state.identity);
         self.governor.admit(change.target(), Instant::now())?;
+        let mut authorized = false;
         let result = match change {
             ControlChange::SetFanCurve { channel, curve } => {
-                match guard.prepare(
+                let original = match channel {
+                    FanChannel::Cpu => report.state.cpu_fan.map(|f| f.curve),
+                    FanChannel::Gpu => report.state.gpu_fan.map(|f| f.curve),
+                };
+                match commit_fan_curve(
+                    &mut guard,
                     self.device.as_mut(),
-                    EcWriteIntent::FanCurve {
-                        channel: *channel,
-                        curve,
-                    },
+                    *channel,
+                    curve,
+                    &mut permit,
+                    &mut authorized,
                 ) {
-                    Ok(transaction) if permit() => transaction
-                        .commit()
-                        .map(|_| ())
-                        .map_err(|error| ErrorCode::from(&error)),
-                    Ok(_) => Err(ErrorCode::NotReady),
-                    Err(error) => Err(ErrorCode::from(&error)),
+                    Ok(curve_changed) => {
+                        if let Some(activation) = fan_activation {
+                            let mode_result = guarded_register_plan(
+                                &mut guard,
+                                self.device.as_mut(),
+                                map,
+                                &[activation],
+                                &mut || {
+                                    if authorized {
+                                        true
+                                    } else {
+                                        authorized = permit();
+                                        authorized
+                                    }
+                                },
+                            );
+                            if let Err(error) = mode_result {
+                                if curve_changed
+                                    && !guard.recovery_required()
+                                    && error != ErrorCode::TimedOut
+                                {
+                                    if let Some(orig) = original {
+                                        if rollback_fan_curve(
+                                            &mut guard,
+                                            self.device.as_mut(),
+                                            *channel,
+                                            &orig,
+                                        )
+                                        .is_err()
+                                        {
+                                            Err(ErrorCode::RollbackFailed)
+                                        } else {
+                                            Err(error)
+                                        }
+                                    } else {
+                                        Err(error)
+                                    }
+                                } else {
+                                    Err(error)
+                                }
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            ControlChange::SetPerformanceMode { .. } if effective_curves.is_some() => {
+                let (cpu_curve, gpu_curve) = effective_curves.expect("checked some");
+                let orig_cpu = report.state.cpu_fan.map(|f| f.curve);
+                let orig_gpu = report.state.gpu_fan.map(|f| f.curve);
+                let mut cpu_changed = false;
+                let mut gpu_changed = false;
+                let mut step_result: Result<(), ErrorCode> = Ok(());
+                if let Some(cpu) = cpu_curve {
+                    match commit_fan_curve(
+                        &mut guard,
+                        self.device.as_mut(),
+                        FanChannel::Cpu,
+                        &cpu,
+                        &mut permit,
+                        &mut authorized,
+                    ) {
+                        Ok(changed) => cpu_changed = changed,
+                        Err(error) => step_result = Err(error),
+                    }
+                }
+                if step_result.is_ok() {
+                    if let Some(gpu) = gpu_curve {
+                        match commit_fan_curve(
+                            &mut guard,
+                            self.device.as_mut(),
+                            FanChannel::Gpu,
+                            &gpu,
+                            &mut permit,
+                            &mut authorized,
+                        ) {
+                            Ok(changed) => gpu_changed = changed,
+                            Err(error) => step_result = Err(error),
+                        }
+                    }
+                }
+                if step_result.is_ok() {
+                    step_result = guarded_register_plan(
+                        &mut guard,
+                        self.device.as_mut(),
+                        map,
+                        &registers,
+                        &mut || {
+                            if authorized {
+                                true
+                            } else {
+                                authorized = permit();
+                                authorized
+                            }
+                        },
+                    );
+                }
+                if let Err(error) = step_result {
+                    if !guard.recovery_required() && error != ErrorCode::TimedOut {
+                        let mut rollback_ok = true;
+                        if gpu_changed {
+                            if let Some(orig) = orig_gpu {
+                                rollback_ok &= rollback_fan_curve(
+                                    &mut guard,
+                                    self.device.as_mut(),
+                                    FanChannel::Gpu,
+                                    &orig,
+                                )
+                                .is_ok();
+                            }
+                        }
+                        if rollback_ok && cpu_changed {
+                            if let Some(orig) = orig_cpu {
+                                rollback_ok &= rollback_fan_curve(
+                                    &mut guard,
+                                    self.device.as_mut(),
+                                    FanChannel::Cpu,
+                                    &orig,
+                                )
+                                .is_ok();
+                            }
+                        }
+                        if !rollback_ok {
+                            Err(ErrorCode::RollbackFailed)
+                        } else {
+                            Err(error)
+                        }
+                    } else {
+                        Err(error)
+                    }
+                } else {
+                    Ok(())
                 }
             }
             _ => guarded_register_plan(
@@ -288,6 +600,85 @@ impl HalBackends {
             );
         result
     }
+}
+
+fn resolve_mode_fan_curves(
+    before: &Observation,
+    change: &ControlChange,
+    fan_profile: Option<ModeFanProfile>,
+) -> Option<(Option<FanCurve>, Option<FanCurve>)> {
+    let ControlChange::SetPerformanceMode { mode } = change else {
+        return None;
+    };
+    let profile = fan_profile?;
+    if !profile.custom_enabled
+        || !FanProfileStore::supports_custom(*mode)
+        || before.report.state.cooler_boost == Some(true)
+        || !before.writable.contains(CapabilityFlags::FAN_CURVE)
+    {
+        return None;
+    }
+    let check = |channel: FanChannel, curve: Option<FanCurve>| -> Result<Option<FanCurve>, ()> {
+        let Some(curve) = curve else {
+            return Ok(None);
+        };
+        let fan = match channel {
+            FanChannel::Cpu => before.report.state.cpu_fan.ok_or(())?,
+            FanChannel::Gpu => before.report.state.gpu_fan.ok_or(())?,
+        };
+        let limits = fan.limits.ok_or(())?;
+        curve.validate_with_limits(&limits).map_err(|_| ())?;
+        Ok(Some(curve))
+    };
+    match (check(FanChannel::Cpu, profile.cpu), check(FanChannel::Gpu, profile.gpu)) {
+        (Ok(cpu), Ok(gpu)) if cpu.is_some() || gpu.is_some() => Some((cpu, gpu)),
+        _ => None,
+    }
+}
+
+fn commit_fan_curve(
+    guard: &mut WriteGuard<'_>,
+    io: &mut dyn EcRegisterIo,
+    channel: FanChannel,
+    curve: &FanCurve,
+    permit: &mut impl FnMut() -> bool,
+    authorized: &mut bool,
+) -> Result<bool, ErrorCode> {
+    let transaction = guard
+        .prepare(io, EcWriteIntent::FanCurve { channel, curve })
+        .map_err(|error| ErrorCode::from(&error))?;
+    let changed = transaction
+        .snapshot()
+        .iter()
+        .any(|item| item.before != item.after);
+    if !*authorized {
+        if !permit() {
+            return Err(ErrorCode::NotReady);
+        }
+        *authorized = true;
+    }
+    transaction
+        .commit()
+        .map(|_| changed)
+        .map_err(|error| ErrorCode::from(&error))
+}
+
+fn rollback_fan_curve(
+    guard: &mut WriteGuard<'_>,
+    io: &mut dyn EcRegisterIo,
+    channel: FanChannel,
+    original: &FanCurve,
+) -> Result<(), ErrorCode> {
+    guard
+        .execute(
+            io,
+            EcWriteIntent::FanCurve {
+                channel,
+                curve: original,
+            },
+        )
+        .map(|_| ())
+        .map_err(|_| ErrorCode::RollbackFailed)
 }
 
 fn guarded_register_plan(
@@ -427,7 +818,10 @@ pub(crate) fn validate(
     change.validate_against(state)?;
     let baseline = observed(state, change.target()).ok_or(ErrorCode::Unsupported)?;
     baseline.validate_against(state)?;
-    if state.cooler_boost == Some(true) && matches!(change, ControlChange::SetFanCurve { .. }) {
+    if matches!(change, ControlChange::SetFanCurve { .. })
+        && (state.cooler_boost == Some(true)
+            || state.performance_mode == Some(PerformanceMode::Silent))
+    {
         return Err(ErrorCode::ConflictDetected);
     }
     Ok(())
@@ -632,6 +1026,10 @@ pub(crate) enum Work {
         change: ControlChange,
         expected: HardwareIdentity,
         lock_lighting: bool,
+        fan_profile: Option<ModeFanProfile>,
+    },
+    ResetFanMode {
+        expected: HardwareIdentity,
     },
     Sample,
     SystemTools {
@@ -795,9 +1193,11 @@ impl Executor {
                                         change,
                                         expected,
                                         lock_lighting,
-                                    } => Completion::Applied(backend.apply(
+                                        fan_profile,
+                                    } => Completion::Applied(backend.apply_with_fan_profile(
                                         &change,
                                         &expected,
+                                        fan_profile,
                                         || {
                                             (if lock_lighting {
                                                 inbox.can_dim_locked_keyboard()
@@ -808,6 +1208,13 @@ impl Executor {
                                                 && ticket.start_write()
                                         },
                                     )),
+                                    Work::ResetFanMode { expected } => {
+                                        Completion::Applied(backend.reset_fan_mode(&expected, || {
+                                            inbox.can_work()
+                                                && Instant::now() < budget_by
+                                                && ticket.start_write()
+                                        }))
+                                    }
                                     Work::Sample => {
                                         Completion::Sample(backend.device.sample_telemetry())
                                     }
@@ -1215,5 +1622,287 @@ mod tests {
         )
         .unwrap();
         assert_eq!(device.register(COOLER), Some(0x92));
+    }
+
+    struct Ms17s3MockEc {
+        inner: msilt_hal::mock::MockHal,
+    }
+
+    impl Ms17s3MockEc {
+        fn new(mode: PerformanceMode, fan_mode: u8, cpu_duties: [u8; 6], gpu_duties: [u8; 6]) -> Self {
+            use msilt_hal::ms17s3::*;
+            let (shift, _, battery) = mode_registers(mode);
+            let mut inner = msilt_hal::mock::MockHal::default()
+                .with_register(COOLER, 0x02)
+                .with_register(SHIFT, shift)
+                .with_register(FAN_MODE, fan_mode)
+                .with_register(BATTERY_MODE, 0xB0 | battery);
+            for i in 0..6 {
+                inner = inner
+                    .with_register(0x72 + i as u8, cpu_duties[i])
+                    .with_register(0x8A + i as u8, gpu_duties[i]);
+            }
+            Self { inner }
+        }
+
+        fn curve(temps: [u8; 6], duties: [u8; 6]) -> FanCurve {
+            FanCurve {
+                points: std::array::from_fn(|i| FanPoint {
+                    temperature_c: temps[i],
+                    duty_percent: duties[i],
+                }),
+            }
+        }
+    }
+
+    impl HardwareRead for Ms17s3MockEc {
+        fn inspect(&mut self) -> HalResult<HardwareReport> {
+            use msilt_hal::ms17s3::*;
+            let map = write_map().unwrap();
+            let shift = self.inner.register(SHIFT).unwrap();
+            let fan = self.inner.register(FAN_MODE).unwrap();
+            let battery = self.inner.register(BATTERY_MODE).unwrap();
+            let cooler = self.inner.register(COOLER).unwrap();
+            let mode = match (shift, fan, battery & BATTERY_MODE_MASK) {
+                (0xC1 | 0xC2 | 0xC4, 0x0D | 0x1D | 0x8D, 0x0F) => Some(PerformanceMode::SuperBattery),
+                (0xC1 | 0xC2, 0x1D, 0) => Some(PerformanceMode::Silent),
+                (0xC1, 0x0D | 0x8D, 0) => Some(PerformanceMode::Balanced),
+                (0xC4, 0x0D | 0x8D, 0) => Some(PerformanceMode::ExtremePerformance),
+                _ => None,
+            };
+            let cpu_duties: [u8; 6] = std::array::from_fn(|i| self.inner.register(0x72 + i as u8).unwrap());
+            let gpu_duties: [u8; 6] = std::array::from_fn(|i| self.inner.register(0x8A + i as u8).unwrap());
+            let flags = CapabilityFlags::PERFORMANCE_MODE
+                | CapabilityFlags::FAN_CURVE
+                | CapabilityFlags::COOLER_BOOST;
+            Ok(HardwareReport {
+                readable: flags,
+                controls_detected: flags,
+                state: HardwareState {
+                    identity: HardwareIdentity {
+                        board_id: Some("MS-17S3".into()),
+                        ec_firmware: Some("17S3EMS1.107".into()),
+                    },
+                    supported_performance_modes: MODES.to_vec(),
+                    performance_mode: mode,
+                    fan_mode: decode_fan_mode(fan),
+                    cpu_fan: Some(FanState {
+                        curve: Self::curve([0, 48, 56, 62, 70, 78], cpu_duties),
+                        limits: map.fan_curve_limits(FanChannel::Cpu),
+                    }),
+                    gpu_fan: Some(FanState {
+                        curve: Self::curve([0, 43, 48, 56, 65, 72], gpu_duties),
+                        limits: map.fan_curve_limits(FanChannel::Gpu),
+                    }),
+                    cooler_boost: Some(cooler & COOLER_MASK != 0),
+                    ..Default::default()
+                },
+            })
+        }
+        fn sample_telemetry(&mut self) -> HalResult<TelemetrySample> {
+            Err(HalError::Unsupported)
+        }
+    }
+
+    impl EcRegisterIo for Ms17s3MockEc {
+        fn read_byte(&mut self, address: u8) -> HalResult<u8> {
+            self.inner.read_byte(address)
+        }
+        fn write_byte(&mut self, permit: &AuthorizedEcWrite) -> HalResult<()> {
+            self.inner.write_byte(permit)
+        }
+    }
+
+    impl PlatformControl for Ms17s3MockEc {
+        fn set_display_refresh_rate(&mut self, hz: u16) -> HalResult<u16> {
+            Noop.set_display_refresh_rate(hz)
+        }
+        fn set_display_brightness(&mut self, percent: u8) -> HalResult<u8> {
+            Noop.set_display_brightness(percent)
+        }
+        fn set_color_profile(&mut self, id: &str) -> HalResult<()> {
+            Noop.set_color_profile(id)
+        }
+        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+            Noop.set_keyboard_lighting(zones)
+        }
+    }
+
+    struct Ms17s3TestPolicy;
+    impl EcWritePolicy for Ms17s3TestPolicy {
+        fn authorize(&mut self, _: &HardwareReport) -> Result<&EcMap, EcWriteStatus> {
+            Ok(msilt_hal::ms17s3::write_map().unwrap())
+        }
+        fn writable_targets(&self) -> CapabilityFlags {
+            CapabilityFlags::PERFORMANCE_MODE
+                | CapabilityFlags::FAN_CURVE
+                | CapabilityFlags::COOLER_BOOST
+        }
+        fn register_intent(&self, _: &ControlChange) -> Option<EcWrite> {
+            None
+        }
+        fn fan_mode_write(&self, mode: FanMode) -> Option<(EcWrite, u8)> {
+            Some((
+                EcWrite {
+                    address: msilt_hal::ms17s3::FAN_MODE,
+                    value: msilt_hal::ms17s3::fan_mode_byte(mode),
+                },
+                u8::MAX,
+            ))
+        }
+        fn default_fan_mode(&self, mode: PerformanceMode) -> Option<FanMode> {
+            Some(msilt_hal::ms17s3::default_fan_mode(mode))
+        }
+        fn mode_register_plan(&self, mode: PerformanceMode, custom_fan: bool) -> Vec<(EcWrite, u8)> {
+            use msilt_hal::ms17s3::*;
+            let entry = |address, value, mask| (EcWrite { address, value }, mask);
+            let (shift, default_fan, battery) = mode_registers(mode);
+            let fan = if custom_fan && FanProfileStore::supports_custom(mode) {
+                FAN_MODE_ADVANCED
+            } else {
+                default_fan
+            };
+            vec![
+                entry(FAN_MODE, fan, u8::MAX),
+                entry(SHIFT, shift, u8::MAX),
+                entry(BATTERY_MODE, battery, BATTERY_MODE_MASK),
+            ]
+        }
+    }
+
+    #[test]
+    fn fan_curve_apply_activates_advanced_mode_rolls_back_and_blocks_silent() {
+        use msilt_hal::ms17s3::*;
+        let id = HardwareIdentity {
+            board_id: Some("MS-17S3".into()),
+            ec_firmware: Some("17S3EMS1.107".into()),
+        };
+        let cpu_floor = [0, 36, 42, 52, 76, 84];
+        let gpu_floor = [0, 36, 46, 56, 80, 88];
+        let same_curve = Ms17s3MockEc::curve([0, 48, 56, 62, 70, 78], cpu_floor);
+
+        // Even when curve bytes already match EC RAM, applying in Auto mode must write 0xD4 = 0x8D.
+        let mut backend = HalBackends::new(
+            Ms17s3MockEc::new(PerformanceMode::Balanced, FAN_MODE_AUTO, cpu_floor, gpu_floor),
+            CapabilityFlags::NONE,
+        )
+        .with_ec_policy(Ms17s3TestPolicy);
+        let applied = backend.apply(
+            &ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: same_curve,
+            },
+            &id,
+            || true,
+        );
+        assert_eq!(applied.result, Ok(()));
+        assert_eq!(
+            applied.observation.unwrap().report.state.fan_mode,
+            Some(FanMode::Advanced)
+        );
+
+        // Resetting fan mode returns 0xD4 to Auto (0x0D).
+        std::thread::sleep(Duration::from_millis(420));
+        let reset = backend.reset_fan_mode(&id, || true);
+        assert_eq!(reset.result, Ok(()));
+        assert_eq!(
+            reset.observation.unwrap().report.state.fan_mode,
+            Some(FanMode::Auto)
+        );
+
+        // Silent mode rejects SetFanCurve with ConflictDetected without touching EC.
+        let mut silent_backend = HalBackends::new(
+            Ms17s3MockEc::new(PerformanceMode::Silent, FAN_MODE_SILENT, cpu_floor, gpu_floor),
+            CapabilityFlags::NONE,
+        )
+        .with_ec_policy(Ms17s3TestPolicy);
+        let rejected = silent_backend.apply(
+            &ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: same_curve,
+            },
+            &id,
+            || true,
+        );
+        assert_eq!(rejected.result, Err(ErrorCode::ConflictDetected));
+
+        // Failure writing 0xD4=0x8D rolls back previously written curve bytes cleanly.
+        let mut failing_ec =
+            Ms17s3MockEc::new(PerformanceMode::Balanced, FAN_MODE_AUTO, cpu_floor, gpu_floor);
+        // 1 changed curve byte succeeds, then FAN_MODE write fails cleanly.
+        failing_ec.inner.script_write(msilt_hal::mock::MockWrite::Apply);
+        failing_ec
+            .inner
+            .script_write(msilt_hal::mock::MockWrite::FailBefore(HalError::Io));
+        let mut rollback_backend = HalBackends::new(failing_ec, CapabilityFlags::NONE)
+            .with_ec_policy(Ms17s3TestPolicy);
+        let bumped = Ms17s3MockEc::curve([0, 48, 56, 62, 70, 78], [0, 36, 42, 52, 76, 95]);
+        let failed = rollback_backend.apply(
+            &ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: bumped,
+            },
+            &id,
+            || true,
+        );
+        assert_eq!(failed.result, Err(ErrorCode::WriteFailed));
+        let after = failed.observation.unwrap().report.state;
+        assert_eq!(after.fan_mode, Some(FanMode::Auto));
+        assert_eq!(after.cpu_fan.unwrap().curve, same_curve);
+    }
+
+    #[test]
+    fn mode_switch_applies_memorized_curves_and_reverts_to_auto_when_disabled() {
+        use msilt_hal::ms17s3::*;
+        let id = HardwareIdentity {
+            board_id: Some("MS-17S3".into()),
+            ec_firmware: Some("17S3EMS1.107".into()),
+        };
+        let cpu_floor = [0, 36, 42, 52, 76, 84];
+        let gpu_floor = [0, 36, 46, 56, 80, 88];
+        let ext_cpu = Ms17s3MockEc::curve([0, 48, 56, 62, 70, 78], [0, 45, 55, 70, 95, 120]);
+        let ext_gpu = Ms17s3MockEc::curve([0, 43, 48, 56, 65, 72], [0, 44, 58, 72, 98, 122]);
+
+        let mut backend = HalBackends::new(
+            Ms17s3MockEc::new(PerformanceMode::Balanced, FAN_MODE_AUTO, cpu_floor, gpu_floor),
+            CapabilityFlags::NONE,
+        )
+        .with_ec_policy(Ms17s3TestPolicy);
+
+        // Switch to ExtremePerformance with a memorized custom profile -> curves + 0xD4=0x8D applied atomically.
+        let profile = ModeFanProfile {
+            custom_enabled: true,
+            cpu: Some(ext_cpu),
+            gpu: Some(ext_gpu),
+        };
+        let to_ext = backend.apply_with_fan_profile(
+            &ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::ExtremePerformance,
+            },
+            &id,
+            Some(profile),
+            || true,
+        );
+        assert_eq!(to_ext.result, Ok(()));
+        let ext_state = to_ext.observation.unwrap().report.state;
+        assert_eq!(ext_state.performance_mode, Some(PerformanceMode::ExtremePerformance));
+        assert_eq!(ext_state.fan_mode, Some(FanMode::Advanced));
+        assert_eq!(ext_state.cpu_fan.unwrap().curve, ext_cpu);
+        assert_eq!(ext_state.gpu_fan.unwrap().curve, ext_gpu);
+
+        // Switch back to Balanced with no custom profile -> reverts 0xD4 to Auto (0x0D).
+        std::thread::sleep(Duration::from_millis(280));
+        let to_bal = backend.apply_with_fan_profile(
+            &ControlChange::SetPerformanceMode {
+                mode: PerformanceMode::Balanced,
+            },
+            &id,
+            None,
+            || true,
+        );
+        assert_eq!(to_bal.result, Ok(()));
+        let bal_state = to_bal.observation.unwrap().report.state;
+        assert_eq!(bal_state.performance_mode, Some(PerformanceMode::Balanced));
+        assert_eq!(bal_state.fan_mode, Some(FanMode::Auto));
     }
 }

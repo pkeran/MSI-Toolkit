@@ -2,14 +2,14 @@
 // responsive dual 6-knot fan curves (side-by-side on wide windows, stacked on half-screen snap).
 
 import { Theme } from "../theme.slint";
-import { AppState } from "../state.slint";
+import { AppState, Fmt } from "../state.slint";
 import { SettingsCard } from "../components/settings_card.slint";
 import { FluentButton } from "../components/fluent_button.slint";
 import { FluentSegmentBar } from "../components/fluent_segment.slint";
 import { FluentToggle } from "../components/fluent_toggle.slint";
 import { FanCurveEditor } from "../components/fan_curve.slint";
 import { InfoBar } from "../components/info_bar.slint";
-import { Chip } from "../components/primitives.slint";
+import { Chip, NoteRow } from "../components/primitives.slint";
 
 component ModeCard inherits Rectangle {
     horizontal-stretch: 3;
@@ -20,6 +20,11 @@ component ModeCard inherits Rectangle {
         card-height: 62px;
         glyph: "gauge";
         title: "性能模式";
+        subtitle: AppState.cooler-boost ? "强冷散热接管中"
+                : AppState.fan-mode == 2 ? "当前使用自定义风扇曲线"
+                : AppState.fan-mode == 1 ? "当前使用主板静音策略"
+                : AppState.fan-mode == 0 ? "当前使用主板自动策略"
+                : "";
 
         FluentSegmentBar {
             width: 288px;
@@ -68,7 +73,9 @@ component CpuCurveCard inherits Rectangle {
         live-rpm: AppState.cpu-rpm;
         live-duty: AppState.cpu-duty;
         readonly: !AppState.cpu-curve-editable;
-        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.interactive;
+        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.performance-mode != 1 && AppState.interactive;
+        custom-active: !AppState.cooler-boost && AppState.fan-mode == 2;
+        blocked-by-mode: AppState.cooler-boost || AppState.performance-mode == 1;
         pending: AppState.curve-apply-pending;
         dirty: AppState.cpu-curve-dirty;
         error: AppState.curve-channel == 0 ? AppState.curve-error : "";
@@ -93,7 +100,9 @@ component GpuCurveCard inherits Rectangle {
         live-rpm: AppState.gpu-rpm;
         live-duty: AppState.gpu-duty;
         readonly: !AppState.gpu-curve-editable;
-        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.interactive;
+        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.performance-mode != 1 && AppState.interactive;
+        custom-active: !AppState.cooler-boost && AppState.fan-mode == 2;
+        blocked-by-mode: AppState.cooler-boost || AppState.performance-mode == 1;
         pending: AppState.curve-apply-pending;
         dirty: AppState.gpu-curve-dirty;
         error: AppState.curve-channel == 1 ? AppState.curve-error : "";
@@ -110,9 +119,11 @@ export component PerformancePage inherits Rectangle {
 
     property <bool> wide-top: root.width >= 760px;
     property <bool> wide-curves: root.width >= 780px;
+    property <bool> silent-mode: AppState.performance-mode == 1;
+    property <bool> show-restore-auto: !AppState.cooler-boost && !root.silent-mode && (AppState.fan-mode == 2 || AppState.current-mode-custom-saved);
     property <length> curve-canvas-h: root.wide-curves
-        ? clamp(root.viewport-h - 292px, 176px, 260px)
-        : 196px;
+        ? clamp(root.viewport-h - 266px, 184px, 274px)
+        : 204px;
 
     VerticalLayout {
         alignment: start;
@@ -143,13 +154,39 @@ export component PerformancePage inherits Rectangle {
                     font-weight: 600;
                     color: Theme.text;
                     vertical-alignment: center;
-                    horizontal-stretch: 1;
                 }
                 VerticalLayout {
                     alignment: center;
                     Chip {
-                        text: AppState.curve-dirty ? "未保存" : "已同步";
-                        level: AppState.curve-dirty ? 1 : 0;
+                        text: AppState.cooler-boost ? "强冷全速中"
+                            : AppState.fan-mode == 2 ? "自定义曲线生效中"
+                            : AppState.fan-mode == 1 ? "静音策略"
+                            : AppState.fan-mode == 0 ? (root.width < 880px ? "自动策略" : ("自动策略 · " + Fmt.mode-name(AppState.performance-mode)))
+                            : "策略未知";
+                        level: AppState.cooler-boost ? 1
+                             : AppState.fan-mode == 2 ? 3
+                             : (AppState.fan-mode == 0 || AppState.fan-mode == 1) ? 4
+                             : 0;
+                    }
+                }
+                if AppState.curve-dirty : VerticalLayout {
+                    alignment: center;
+                    Chip {
+                        text: "未保存";
+                        level: 1;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                if root.show-restore-auto : VerticalLayout {
+                    alignment: center;
+                    FluentButton {
+                        text: "恢复自动";
+                        compact: true;
+                        variant: 0;
+                        width: 76px;
+                        enabled: AppState.cap-fan && AppState.ec-writable && AppState.interactive && !AppState.curve-apply-pending;
+                        clicked => { AppState.command(34, 0, 0); }
                     }
                 }
                 VerticalLayout {
@@ -158,7 +195,7 @@ export component PerformancePage inherits Rectangle {
                         text: "出厂";
                         compact: true;
                         variant: 2;
-                        width: 60px;
+                        width: 56px;
                         enabled: !AppState.curve-apply-pending;
                         clicked => { AppState.command(33, AppState.curve-channel, 0); }
                     }
@@ -166,10 +203,10 @@ export component PerformancePage inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     FluentButton {
-                        text: "静音";
+                        text: "低噪";
                         compact: true;
                         variant: 2;
-                        width: 60px;
+                        width: 56px;
                         enabled: !AppState.curve-apply-pending;
                         clicked => { AppState.command(33, AppState.curve-channel, 1); }
                     }
@@ -180,7 +217,7 @@ export component PerformancePage inherits Rectangle {
                         text: "性能";
                         compact: true;
                         variant: 2;
-                        width: 60px;
+                        width: 56px;
                         enabled: !AppState.curve-apply-pending;
                         clicked => { AppState.command(33, AppState.curve-channel, 2); }
                     }
@@ -189,7 +226,24 @@ export component PerformancePage inherits Rectangle {
 
             if AppState.cooler-boost : InfoBar {
                 level: 4;
-                text: "强冷散热已开启，风扇当前由硬件全速接管，关闭后将自动恢复自定义曲线。";
+                text: "强冷散热已开启，风扇当前由硬件全速接管，关闭后将自动恢复当前模式的风扇策略。";
+            }
+            if !AppState.cooler-boost && root.silent-mode : InfoBar {
+                level: 4;
+                text: "静音模式由主板内置静音风扇策略接管；如需使用自定义曲线，请切换至平衡、极致性能或超级省电模式。";
+            }
+            if !AppState.cooler-boost && !root.silent-mode && AppState.fan-mode == 0 : NoteRow {
+                level: 4;
+                text: AppState.current-mode-custom-saved
+                    ? ("当前为主板自动调速；「" + Fmt.mode-name(AppState.performance-mode) + "」已记忆自定义曲线，点「启用」可立即恢复。")
+                    : ("当前由主板按「" + Fmt.mode-name(AppState.performance-mode) + "」自动调速；调整曲线并点「应用」或「启用」可为该模式单独记忆。");
+            }
+            if !AppState.cooler-boost && !root.silent-mode && AppState.fan-mode == 2 : NoteRow {
+                level: 3;
+                glyph: "check";
+                text: AppState.custom-fan-modes-summary != ""
+                    ? ("已按性能模式记忆自定义曲线（" + AppState.custom-fan-modes-summary + "），切换模式时自动套用。")
+                    : ("自定义曲线正在接管风扇；点击「应用」可保存至「" + Fmt.mode-name(AppState.performance-mode) + "」，或点击「恢复自动」。");
             }
 
             if root.wide-curves : HorizontalLayout {

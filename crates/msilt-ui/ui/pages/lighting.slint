@@ -16,6 +16,8 @@ component PresetChipButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
+    min-width: 0px;
+    preferred-width: 0px;
     horizontal-stretch: 1;
     height: 32px;
     border-radius: Theme.radius;
@@ -48,28 +50,36 @@ component PresetChipButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    HorizontalLayout {
-        alignment: center;
-        spacing: 6px;
-        padding-left: 8px;
-        padding-right: 8px;
+    // Fixed-width centered content box so swatch dots and text align vertically
+    // and horizontally across every cell of the 2x2 grid at any window width.
+    Rectangle {
+        width: min(64px, max(0px, parent.width - 16px));
+        height: parent.height;
+        x: (parent.width - self.width) / 2;
+        y: 0px;
+        background: transparent;
 
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                border-radius: 3px;
-                background: root.dot;
-                border-width: 1px;
-                border-color: Theme.stroke-strong;
-            }
+        Rectangle {
+            x: 0px;
+            y: (parent.height - self.height) / 2;
+            width: 10px;
+            height: 10px;
+            border-radius: 3px;
+            background: root.dot;
+            border-width: 1px;
+            border-color: Theme.stroke-strong;
         }
         Text {
+            x: 18px;
+            y: 0px;
+            width: max(0px, parent.width - 18px);
+            height: parent.height;
             text: root.label;
             font-size: Theme.font-caption;
             color: root.enabled ? Theme.text : Theme.text-disabled;
+            horizontal-alignment: left;
             vertical-alignment: center;
+            overflow: elide;
         }
     }
 }
@@ -99,15 +109,18 @@ component LightingControlsDeck inherits Rectangle {
         }
 
         SectionLabel { text: "快速预设"; glyph: "bolt"; }
-        HorizontalLayout {
+        VerticalLayout {
             spacing: 6px;
-            PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 0, 0); } }
-            PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: root.can-edit; clicked => { AppState.command(42, 1, 0); } }
-        }
-        HorizontalLayout {
-            spacing: 6px;
-            PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: root.can-edit; clicked => { AppState.command(42, 2, 0); } }
-            PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 3, 0); } }
+            HorizontalLayout {
+                spacing: 6px;
+                PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 0, 0); } }
+                PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: root.can-edit; clicked => { AppState.command(42, 1, 0); } }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: root.can-edit; clicked => { AppState.command(42, 2, 0); } }
+                PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 3, 0); } }
+            }
         }
 
         Rule { }

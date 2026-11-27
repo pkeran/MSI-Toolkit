@@ -60,6 +60,7 @@ fn ready_snapshot() -> SystemSnapshot {
             ..HardwareState::default()
         },
         manual_overrides: Vec::new(),
+        custom_fan_modes: Vec::new(),
     }
 }
 
