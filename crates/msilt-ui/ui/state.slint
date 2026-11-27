@@ -118,6 +118,7 @@ export global AppState {
     in-out property <bool> request-pending: false;
     in-out property <bool> diagnostic: false;
     in-out property <string> connection-text: "正在连接服务…";
+    in-out property <int> connection-level: 4; // 0 neutral, 1 warn, 2 danger, 3 ok, 4 info
     in-out property <bool> demo: false;
     in-out property <string> revision: "0";
     in-out property <string> daemon-version: "0.1.0";

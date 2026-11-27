@@ -72,6 +72,7 @@ mod cmd {
     pub const BANNER: i32 = 61;
     pub const TOAST_DISMISS: i32 = 62;
     pub const OPEN_SETTINGS: i32 = 63;
+    pub const STATUS_PILL: i32 = 64;
     pub const MONITOR_PAUSE: i32 = 70;
     pub const MONITOR_WINDOW: i32 = 71;
     pub const EXPORT: i32 = 80;
@@ -97,7 +98,8 @@ mod cmd {
     pub const LAUNCH_UNINSTALL: i32 = 103;
 }
 
-const TOAST_TTL: Duration = Duration::from_millis(3_200);
+const TOAST_TTL_SHORT: Duration = Duration::from_millis(2_600);
+const TOAST_TTL_LONG: Duration = Duration::from_millis(4_000);
 const MIN_WINDOW: (f32, f32) = (820.0, 580.0);
 
 /// Process start, used for the first-frame measurement (the software renderer
@@ -142,6 +144,8 @@ struct App {
     oem: OemInventory,
     oem_busy: bool,
     pending_tools_notice: Option<&'static str>,
+    pending_auto_toast: Option<&'static str>,
+    pending_release_toast: bool,
     pending_releases: Vec<msilt_core::ControlTarget>,
     auto_rules: Vec<AutomationRuleView>,
     auto_summary: String,
@@ -248,18 +252,32 @@ impl App {
         } else {
             2
         });
-        state.set_connection_text(
-            if self.demo {
-                "演示模式"
-            } else if self.connected {
-                "服务已连接"
-            } else if self.ipc.is_some() {
-                "正在连接…"
+        let (conn_level, conn_text) = if self.demo {
+            (0, "演示模式")
+        } else if !self.connected {
+            if self.ipc.is_some() {
+                (4, "正在连接…")
             } else {
-                "服务未运行"
+                (2, "服务未运行")
             }
-            .into(),
-        );
+        } else if self.snapshot.status == msilt_core::DaemonStatus::Starting {
+            (4, "正在初始化")
+        } else if self.snapshot.ec_write_status == msilt_core::EcWriteStatus::RecoveryRequired {
+            (2, "控制已暂停")
+        } else if self.snapshot.status == msilt_core::DaemonStatus::Degraded {
+            (1, "控制受限")
+        } else {
+            match self.snapshot.ec_write_status {
+                msilt_core::EcWriteStatus::Enabled => (3, "服务正常"),
+                msilt_core::EcWriteStatus::ConflictDetected => (1, "软件冲突"),
+                msilt_core::EcWriteStatus::ReadOnlyFirmware
+                | msilt_core::EcWriteStatus::UnverifiedMapping => (1, "仅查看"),
+                msilt_core::EcWriteStatus::Unavailable => (1, "控制受限"),
+                msilt_core::EcWriteStatus::RecoveryRequired => (2, "控制已暂停"),
+            }
+        };
+        state.set_connection_level(conn_level);
+        state.set_connection_text(conn_text.into());
         state.set_demo(self.demo);
         state.set_first_frame_ms(self.first_frame_ms);
         state.set_curve_apply_pending(self.pending_control.is_some());
@@ -293,24 +311,9 @@ impl App {
         );
         state.set_update_status_text(self.update_status_text.clone().into());
 
-        // Persistent banner ONLY for actionable blockers or new-version notice (never transient spam).
+        // Persistent banner ONLY for global blocking abnormal states (updates use the left-nav badge).
         let installed = !self.demo && self.app_installed;
-        let notice = view::notice(&self.snapshot, self.connected, self.demo, installed)
-            .or_else(|| {
-                (self.update_state == 3).then(|| {
-                    let tag = self
-                        .update_release
-                        .as_ref()
-                        .map(|r| r.tag.as_str())
-                        .unwrap_or("新版本");
-                    Notice {
-                        level: 4,
-                        title: format!("发现新版本 {tag}"),
-                        text: "可在「系统与工具」中一键升级。".into(),
-                        action: "前往更新".into(),
-                    }
-                })
-            });
+        let notice = view::notice(&self.snapshot, self.connected, self.demo, installed);
         match notice {
             Some(notice) => {
                 state.set_banner_visible(true);
@@ -341,6 +344,7 @@ impl App {
     fn transient(&mut self, level: i32, title: &str, text: String) {
         self.toast_seq = self.toast_seq.wrapping_add(1);
         let seq = self.toast_seq;
+        let ttl = if level == 1 || level == 2 { TOAST_TTL_LONG } else { TOAST_TTL_SHORT };
         self.toast_notice = Notice {
             level,
             title: title.to_string(),
@@ -349,7 +353,7 @@ impl App {
         };
         self.toast_visible = true;
         self.push_toast();
-        Timer::single_shot(TOAST_TTL, move || {
+        Timer::single_shot(ttl, move || {
             with_app(|app| {
                 if app.toast_seq == seq && app.toast_visible {
                     // Keep title/text intact while fading out smoothly.
@@ -372,12 +376,21 @@ impl App {
         if snapshot.revision < self.snapshot.revision {
             return;
         }
+        let was_unavailable = self.connected
+            && (self.snapshot.status == msilt_core::DaemonStatus::Degraded
+                || self.snapshot.ec_write_status == msilt_core::EcWriteStatus::Unavailable);
+        let recovered = was_unavailable
+            && snapshot.status == msilt_core::DaemonStatus::Ready
+            && snapshot.ec_write_status == msilt_core::EcWriteStatus::Enabled;
         let keep_preview = self.curves.iter().any(CurveEditor::is_dirty);
         self.snapshot = snapshot;
         if !keep_preview {
             self.curves = curves_from(&self.snapshot);
         }
         self.connected = true;
+        if recovered {
+            self.transient(3, "硬件控制已恢复", String::new());
+        }
     }
 
     fn apply_telemetry(&mut self, sample: &TelemetrySample) {
@@ -400,6 +413,8 @@ impl App {
         self.pending_control = None;
         self.config_pending = None;
         self.pending_tools_notice = None;
+        self.pending_auto_toast = None;
+        self.pending_release_toast = false;
         self.pending_releases.clear();
         self.oem_busy = false;
         self.config = None;
@@ -744,8 +759,10 @@ impl App {
                             diagnostic: "已添加到演示列表".into(),
                             active: false,
                         });
+                        self.transient(3, "已添加自动化规则", name.into());
                     }
                 } else {
+                    self.pending_auto_toast = Some("已添加自动化规则");
                     self.send_simple(IpcCommand::AddAutomationPreset { preset });
                 }
             }
@@ -753,8 +770,10 @@ impl App {
                 let Some(rule) = self.auto_rules.get(a as usize) else { return; };
                 if self.demo {
                     self.auto_rules.remove(a as usize);
+                    self.transient(3, "已删除自动化规则", String::new());
                 } else {
                     let id = rule.id.clone();
+                    self.pending_auto_toast = Some("已删除自动化规则");
                     self.send_simple(IpcCommand::DeleteAutomationRule { id });
                 }
             }
@@ -765,6 +784,7 @@ impl App {
                     }
                     self.transient(3, "模拟测试完成", "当前规则配置正常，无冲突。".into());
                 } else {
+                    self.pending_auto_toast = Some("模拟测试完成");
                     self.send_simple(IpcCommand::DryRunAutomation {});
                 }
             }
@@ -773,6 +793,7 @@ impl App {
                     self.snapshot.manual_overrides.clear();
                     self.transient(3, "已恢复自动切换", String::new());
                 } else if !self.snapshot.manual_overrides.is_empty() {
+                    self.pending_release_toast = true;
                     self.pending_releases = self.snapshot.manual_overrides.clone();
                     if let Some(target) = self.pending_releases.pop() {
                         let expected_revision = self.snapshot.revision;
@@ -831,6 +852,24 @@ impl App {
                 self.transient(4, "诊断摘要", self.report.summary());
                 return;
             }
+            cmd::STATUS_PILL => {
+                if self.demo {
+                    return;
+                }
+                if !self.connected {
+                    self.on_command(cmd::BANNER, 0, 0);
+                } else if self.snapshot.status == msilt_core::DaemonStatus::Degraded
+                    || self.snapshot.ec_write_status == msilt_core::EcWriteStatus::Unavailable
+                {
+                    self.transient(4, "正在重新检测硬件", "正在向后台请求重新读取硬件接口…".into());
+                    self.send_simple(IpcCommand::GetSnapshot {});
+                } else if let Some(ui) = self.ui.upgrade() {
+                    ui.global::<AppState>().set_page(7);
+                    self.push_system_metrics();
+                    self.sync_subscriptions();
+                }
+                return;
+            }
             cmd::BANNER => {
                 if !self.connected && !self.demo {
                     self.app_installed = updater::is_installed();
@@ -852,6 +891,11 @@ impl App {
                     } else {
                         self.on_command(cmd::RECONNECT, 0, 0);
                     }
+                } else if self.connected
+                    && self.snapshot.ec_write_status == msilt_core::EcWriteStatus::Unavailable
+                {
+                    self.transient(4, "正在重新检测硬件", "正在向后台请求重新读取硬件接口…".into());
+                    self.send_simple(IpcCommand::GetSnapshot {});
                 } else if let Some(ui) = self.ui.upgrade() {
                     ui.global::<AppState>().set_page(7);
                     self.push_system_metrics();
@@ -1139,6 +1183,9 @@ impl App {
                             expected_revision,
                             target: next_target,
                         });
+                    } else if self.pending_release_toast {
+                        self.pending_release_toast = false;
+                        self.transient(3, "已恢复自动切换", String::new());
                     }
                 }
                 IpcReply::Config { config, revision } => {
@@ -1186,7 +1233,11 @@ impl App {
                     self.auto_rules = rules;
                     self.auto_summary = summary.clone();
                     if let Some(ui) = self.ui.upgrade() {
-                        ui.global::<AppState>().set_dry_run_result(summary.into());
+                        ui.global::<AppState>().set_dry_run_result(summary.clone().into());
+                    }
+                    if let Some(title) = self.pending_auto_toast.take() {
+                        let detail = if title == "模拟测试完成" { summary } else { String::new() };
+                        self.transient(3, title, detail);
                     }
                 }
                 IpcReply::OsdShown {} => {
@@ -1196,6 +1247,8 @@ impl App {
             IpcResult::Error { error } => {
                 self.oem_busy = false;
                 self.pending_tools_notice = None;
+                self.pending_auto_toast = None;
+                self.pending_release_toast = false;
                 self.pending_releases.clear();
                 self.transient(2, "操作未生效", error_code_text(error.code));
             }
@@ -1462,6 +1515,8 @@ fn run(options: Options) -> ExitCode {
         oem: if demo { demo::oem_inventory() } else { OemInventory::default() },
         oem_busy: false,
         pending_tools_notice: None,
+        pending_auto_toast: None,
+        pending_release_toast: false,
         pending_releases: Vec::new(),
         auto_rules: if demo { demo::automation_rules() } else { Vec::new() },
         auto_summary: if demo { "演示规则 · 2 条已加载".into() } else { "正在读取规则…".into() },

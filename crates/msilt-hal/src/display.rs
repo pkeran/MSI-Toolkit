@@ -104,6 +104,7 @@ pub(crate) fn inspect(
     deadline: Instant,
     issues: &mut Vec<Diagnostic>,
     inspect_controls: bool,
+    include_factory_profiles: bool,
 ) -> DisplayReport {
     let mut report = DisplayReport::default();
     let mut settable_color_target = false;
@@ -161,9 +162,11 @@ pub(crate) fn inspect(
         }
         Err(error) => issues.push(error),
     }
-    match factory_profiles(deadline, &mut report.color.factory_profiles, issues) {
-        Ok(present) => report.color.factory_library_present = Some(present),
-        Err(error) => issues.push(error),
+    if include_factory_profiles {
+        match factory_profiles(deadline, &mut report.color.factory_profiles, issues) {
+            Ok(present) => report.color.factory_library_present = Some(present),
+            Err(error) => issues.push(error),
+        }
     }
     report
 }

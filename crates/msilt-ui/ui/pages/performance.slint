@@ -8,6 +8,7 @@ import { FluentButton } from "../components/fluent_button.slint";
 import { FluentSegmentBar } from "../components/fluent_segment.slint";
 import { FluentToggle } from "../components/fluent_toggle.slint";
 import { FanCurveEditor } from "../components/fan_curve.slint";
+import { InfoBar } from "../components/info_bar.slint";
 import { Chip } from "../components/primitives.slint";
 
 component ModeCard inherits Rectangle {
@@ -67,7 +68,7 @@ component CpuCurveCard inherits Rectangle {
         live-rpm: AppState.cpu-rpm;
         live-duty: AppState.cpu-duty;
         readonly: !AppState.cpu-curve-editable;
-        can-apply: AppState.cap-fan && AppState.ec-writable && AppState.interactive;
+        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.interactive;
         pending: AppState.curve-apply-pending;
         dirty: AppState.cpu-curve-dirty;
         error: AppState.curve-channel == 0 ? AppState.curve-error : "";
@@ -92,7 +93,7 @@ component GpuCurveCard inherits Rectangle {
         live-rpm: AppState.gpu-rpm;
         live-duty: AppState.gpu-duty;
         readonly: !AppState.gpu-curve-editable;
-        can-apply: AppState.cap-fan && AppState.ec-writable && AppState.interactive;
+        can-apply: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && AppState.interactive;
         pending: AppState.curve-apply-pending;
         dirty: AppState.gpu-curve-dirty;
         error: AppState.curve-channel == 1 ? AppState.curve-error : "";
@@ -184,6 +185,11 @@ export component PerformancePage inherits Rectangle {
                         clicked => { AppState.command(33, AppState.curve-channel, 2); }
                     }
                 }
+            }
+
+            if AppState.cooler-boost : InfoBar {
+                level: 4;
+                text: "强冷散热已开启，风扇当前由硬件全速接管，关闭后将自动恢复自定义曲线。";
             }
 
             if root.wide-curves : HorizontalLayout {

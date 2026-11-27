@@ -171,9 +171,11 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         alignment: center;
                         StatusPill {
-                            glyph: AppState.connection == 1 ? "check" : "info";
+                            glyph: AppState.connection-level == 3 ? "check" : "info";
                             value: AppState.connection-text;
-                            level: AppState.connection == 1 ? 3 : (AppState.connection == 3 ? 0 : 1);
+                            level: AppState.connection-level;
+                            clickable: !AppState.demo;
+                            clicked => { AppState.command(64, 0, 0); }
                         }
                     }
                 }
@@ -221,6 +223,7 @@ export component AppWindow inherits Window {
                     glyph: root.nav-glyphs[7];
                     selected: AppState.page == 7;
                     collapsed: root.collapsed;
+                    badge: AppState.update-state == 3 ? "新" : "";
                     activated => { AppState.command(10, 7, 0); }
                 }
 
@@ -358,10 +361,10 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // ── Floating animated Toast overlay (0px layout shift, smooth fade in/out) ─
+                // ── Bottom-right floating animated Toast overlay (0px layout shift, never covers headers/actions) ─
                 Toast {
                     x: max(workspace.pad-x, workspace.width - self.width - workspace.pad-x);
-                    anchor-y: AppState.banner-visible ? 62px : 10px;
+                    anchor-y: max(12px, workspace.height - self.height - 14px);
                     max-w: min(400px, max(220px, workspace.width - 2 * workspace.pad-x));
                     shown: AppState.toast-visible;
                     level: AppState.toast-level;

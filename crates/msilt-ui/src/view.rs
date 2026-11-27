@@ -565,6 +565,22 @@ pub fn notice(snapshot: &SystemSnapshot, connected: bool, demo: bool, installed:
             action: if installed { "启动服务".into() } else { "重新连接".into() },
         });
     }
+    if snapshot.status == DaemonStatus::Starting {
+        return Some(Notice {
+            level: 4,
+            title: "正在初始化硬件状态".into(),
+            text: "正在读取主板、风扇与显示接口，请稍候…".into(),
+            action: String::new(),
+        });
+    }
+    if snapshot.status == DaemonStatus::Degraded && snapshot.ec_write_status == EcWriteStatus::Unavailable {
+        return Some(Notice {
+            level: 1,
+            title: "硬件接口暂时无响应".into(),
+            text: "后台正在自动重试读取，你也可以点击右侧立即重新检测。".into(),
+            action: "立即重试".into(),
+        });
+    }
     match snapshot.ec_write_status {
         EcWriteStatus::Enabled => None,
         EcWriteStatus::RecoveryRequired => Some(Notice {
@@ -595,7 +611,7 @@ pub fn notice(snapshot: &SystemSnapshot, connected: bool, demo: bool, installed:
             level: 1,
             title: "硬件控制暂不可用".into(),
             text: "暂时无法访问硬件控制接口，状态监控仍可正常查看。".into(),
-            action: String::new(),
+            action: "重新检测".into(),
         }),
     }
 }

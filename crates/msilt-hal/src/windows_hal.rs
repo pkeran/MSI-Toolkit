@@ -134,7 +134,7 @@ impl WindowsHal {
     }
 
     pub fn diagnose(&mut self) -> ProbeReport {
-        let mut report = self.read_domains();
+        let mut report = self.read_domains(true);
         report.ec_map = match ec_map_loader::load_ms_17s3() {
             Ok(map) => {
                 let identity = &report.identity;
@@ -178,7 +178,7 @@ impl WindowsHal {
         report
     }
 
-    fn read_domains(&self) -> ProbeReport {
+    fn read_domains(&self, include_factory_profiles: bool) -> ProbeReport {
         let mut diagnostics = Vec::new();
         let sampled_at_unix_ms = timestamp(&mut diagnostics);
         static IDENTITY: Lane = OnceLock::new();
@@ -197,7 +197,9 @@ impl WindowsHal {
             "display and ICC",
             4,
             &mut diagnostics,
-            move |deadline, issues| display::inspect(deadline, issues, inspect_controls),
+            move |deadline, issues| {
+                display::inspect(deadline, issues, inspect_controls, include_factory_profiles)
+            },
         );
         let battery = observe(
             &BATTERY,
@@ -538,7 +540,7 @@ fn mux_indicator(raw: u8, panel_vendor: Option<u16>) -> Option<GpuMuxMode> {
 
 impl HardwareRead for WindowsHal {
     fn inspect(&mut self) -> HalResult<HardwareReport> {
-        let report = self.read_domains();
+        let report = self.read_domains(false);
         let acpi = self
             .acpi_enabled
             .then(|| self.read_acpi(Poll::Snapshot, report.sampled_at_unix_ms));

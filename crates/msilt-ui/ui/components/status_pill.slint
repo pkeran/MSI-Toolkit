@@ -1,4 +1,4 @@
-// `StatusPill` — sleek Win11 topbar status capsule with calm hairline surface.
+// `StatusPill` — sleek Win11 topbar status capsule with optional click interaction.
 // level: 0 neutral · 1 warn · 2 danger · 3 ok · 4 accent
 
 import { Theme } from "../theme.slint";
@@ -9,13 +9,31 @@ export component StatusPill inherits Rectangle {
     in property <string> label: "";
     in property <string> value: "";
     in property <int> level: 0;
+    in property <bool> clickable: false;
+    callback clicked();
 
     height: Theme.pill-h;
     border-radius: Theme.radius;
-    background: root.level == 2 ? Theme.danger-surface : Theme.subtle-hover;
-    border-width: root.level == 2 ? 1px : 0px;
-    border-color: root.level == 2 ? Theme.danger.with-alpha(0.32) : transparent;
+    background: root.clickable && ta.pressed ? Theme.subtle-pressed
+              : root.level == 2 ? Theme.danger-surface
+              : root.level == 1 ? Theme.warn-surface
+              : root.clickable && ta.has-hover ? Theme.btn-hover
+              : Theme.subtle-hover;
+    border-width: root.level == 2 || root.level == 1 ? 1px : 0px;
+    border-color: root.level == 2 ? Theme.danger.with-alpha(0.32)
+                : root.level == 1 ? Theme.warn.with-alpha(0.30)
+                : transparent;
     width: pill-layout.preferred-width;
+
+    ta := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => {
+            if root.clickable {
+                root.clicked();
+            }
+        }
+    }
 
     pill-layout := HorizontalLayout {
         padding-left: 9px;
@@ -50,7 +68,7 @@ export component StatusPill inherits Rectangle {
             font-size: Theme.font-caption;
             font-weight: 500;
             font-family: Theme.font-mono;
-            color: Theme.text-2;
+            color: root.level == 2 || root.level == 1 ? Theme.text : Theme.text-2;
             vertical-alignment: center;
         }
     }

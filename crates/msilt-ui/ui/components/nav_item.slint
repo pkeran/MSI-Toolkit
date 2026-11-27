@@ -10,6 +10,7 @@ export component NavItem inherits Rectangle {
     in property <string> glyph: "info";
     in property <bool> selected: false;
     in property <bool> collapsed: false;
+    in property <string> badge: "";
     callback activated();
 
     height: Theme.nav-item-h;
@@ -51,5 +52,38 @@ export component NavItem inherits Rectangle {
             horizontal-stretch: 1;
             overflow: elide;
         }
+
+        if !root.collapsed && root.badge != "" : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 18px;
+                min-width: 24px;
+                border-radius: 9px;
+                background: Theme.accent;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    Text {
+                        text: root.badge;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: Theme.on-accent;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.collapsed && root.badge != "" : Rectangle {
+        x: 27px;
+        y: 7px;
+        width: 7px;
+        height: 7px;
+        border-radius: 3.5px;
+        background: Theme.accent;
+        border-width: 1px;
+        border-color: Theme.nav;
     }
 }

@@ -50,6 +50,8 @@ struct Counts {
     samples: AtomicU32,
     keypad_writes: AtomicU32,
     inspect_gate: Mutex<Option<Arc<Gate>>>,
+    inspect_failures: AtomicU32,
+    sample_failures: AtomicU32,
 }
 
 #[derive(Default)]
@@ -95,6 +97,14 @@ impl HardwareRead for DryRun {
         if let Some(gate) = gate {
             gate.block()?;
         }
+        if self
+            .counts
+            .inspect_failures
+            .try_update(AcqRel, Acquire, |left| left.checked_sub(1))
+            .is_ok()
+        {
+            return Err(HalError::TimedOut);
+        }
         Ok(HardwareReport {
             readable: REFRESH | CapabilityFlags::TELEMETRY | CapabilityFlags::KEYBOARD_LIGHTING,
             controls_detected: REFRESH | CapabilityFlags::KEYBOARD_LIGHTING,
@@ -110,6 +120,14 @@ impl HardwareRead for DryRun {
         self.counts.samples.fetch_add(1, AcqRel);
         if let Some(gate) = self.sample_gate.take() {
             gate.block()?;
+        }
+        if self
+            .counts
+            .sample_failures
+            .try_update(AcqRel, Acquire, |left| left.checked_sub(1))
+            .is_ok()
+        {
+            return Err(HalError::TimedOut);
         }
         Ok(TelemetrySample {
             sampled_at_unix_ms: unix_ms(),
@@ -1112,4 +1130,61 @@ value = 240
             && snapshot.hardware.display_refresh_hz == Some(60)
     });
     assert_eq!(host.counts.calls.load(Acquire), 2);
+}
+
+#[test]
+fn transient_inspect_timeout_recovers_without_permanent_quarantine() {
+    let host = Fixture::start(None, None);
+    host.counts.inspect_failures.store(1, Release);
+    let mut ui = host.client();
+    let initial = ui.hello(ClientKind::Ui);
+    assert_eq!(initial.status, DaemonStatus::Degraded);
+    subscribe(
+        &mut ui,
+        Subscriptions {
+            state: true,
+            ..Default::default()
+        },
+    );
+    let _ = ui.call(IpcCommand::GetSnapshot {}).unwrap();
+    let recovered = state_push(&mut ui, |snapshot| {
+        snapshot.status == DaemonStatus::Ready
+            && snapshot.writable.contains(REFRESH)
+            && snapshot.hardware.display_refresh_hz == Some(60)
+    });
+    assert!(matches!(
+        ui.call(set_hz(recovered.revision, 120)),
+        Ok(IpcReply::Applied { .. })
+    ));
+}
+
+#[test]
+fn transient_sample_timeout_preserves_hardware_controls() {
+    let host = Fixture::start(None, None);
+    let mut ui = host.client();
+    let initial = ui.hello(ClientKind::Ui);
+    assert_eq!(initial.status, DaemonStatus::Ready);
+    host.counts.sample_failures.store(1, Release);
+    subscribe(
+        &mut ui,
+        Subscriptions {
+            state: true,
+            telemetry: true,
+            ..Default::default()
+        },
+    );
+    let first = ui.event(|event| matches!(event, IpcEvent::TelemetryTick { .. }));
+    assert!(matches!(
+        first,
+        IpcEvent::TelemetryTick { sample } if sample.cpu_temperature_c.is_none()
+    ));
+    let second = ui.event(|event| matches!(event, IpcEvent::TelemetryTick { .. }));
+    assert!(matches!(
+        second,
+        IpcEvent::TelemetryTick { sample } if sample.cpu_temperature_c == Some(48)
+    ));
+    assert!(matches!(
+        ui.call(set_hz(initial.revision, 120)),
+        Ok(IpcReply::Applied { .. })
+    ));
 }

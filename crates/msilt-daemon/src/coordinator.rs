@@ -32,10 +32,18 @@ const MAX_TRANSACTIONS: usize = 32;
 const MAX_ACTIONS: usize = 32;
 const MAX_ENGINE_EVENTS: usize = 64;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-const INSPECT_BUDGET: Duration = Duration::from_secs(2);
-const CONTROL_BUDGET: Duration = Duration::from_secs(5);
+const INSPECT_BUDGET: Duration = Duration::from_secs(10);
+const SAMPLE_BUDGET: Duration = Duration::from_secs(3);
+const CONTROL_BUDGET: Duration = Duration::from_secs(12);
 const SYSTEM_READ_BUDGET: Duration = Duration::from_secs(10);
 const SYSTEM_WRITE_BUDGET: Duration = Duration::from_secs(120);
+const INSPECT_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+];
+const MAX_CONSECUTIVE_SAMPLE_TIMEOUTS: u8 = 3;
 
 pub(crate) struct Host {
     pub(crate) port: Port,
@@ -99,6 +107,7 @@ pub(crate) fn run(
         boost_until: None,
         executor: Executor::new(&port, inbox.clone(), backends.hal),
         flight: None,
+        late_read: None,
         quarantine: false,
         leases: LeaseArbiter::default(),
         engine,
@@ -122,6 +131,9 @@ pub(crate) fn run(
         saver: None,
         effective: None,
         inspect_requested: false,
+        inspect_retry_at: None,
+        inspect_retry_failures: 0,
+        sample_timeouts: 0,
         topology_due: None,
         topology_requested: false,
         external_count: None,
@@ -194,6 +206,11 @@ struct Flight {
     ticket: Arc<Ticket>,
 }
 
+struct LateRead {
+    epoch: u64,
+    inspect: bool,
+}
+
 #[derive(Default)]
 struct Telemetry {
     next: Option<Instant>,
@@ -232,6 +249,7 @@ struct Coordinator {
     boost_until: Option<Instant>,
     executor: Executor,
     flight: Option<Flight>,
+    late_read: Option<LateRead>,
     quarantine: bool,
     leases: LeaseArbiter,
     engine: RuleEngine,
@@ -255,6 +273,9 @@ struct Coordinator {
     saver: Option<bool>,
     effective: Option<Option<EffectivePowerMode>>,
     inspect_requested: bool,
+    inspect_retry_at: Option<Instant>,
+    inspect_retry_failures: u32,
+    sample_timeouts: u8,
     topology_due: Option<Instant>,
     topology_requested: bool,
     external_count: Option<u16>,
@@ -387,11 +408,21 @@ impl Coordinator {
             }
             self.pipe.authenticated(peer, *client, verified);
             if self.snapshot.status == DaemonStatus::Starting && self.active() && !self.quarantine {
-                if self.flight.is_none() {
+                if self.flight.is_none() && self.late_read.is_none() {
                     self.inspect_requested = true;
+                    self.inspect_retry_at = None;
                 }
                 self.greetings.push(Greeting { peer, id, until });
             } else {
+                if (self.observation.is_none() || self.snapshot.status == DaemonStatus::Degraded)
+                    && self.active()
+                    && !self.quarantine
+                    && self.flight.is_none()
+                    && self.late_read.is_none()
+                {
+                    self.inspect_requested = true;
+                    self.inspect_retry_at = None;
+                }
                 self.pipe.reply(peer, id, Ok(self.hello()), false);
             }
             return;
@@ -413,9 +444,20 @@ impl Coordinator {
                     .reply(peer, id, Err(ErrorCode::InvalidRequest), true);
                 return;
             }
-            IpcCommand::GetSnapshot {} => Ok(IpcReply::Snapshot {
-                snapshot: (*self.snapshot).clone(),
-            }),
+            IpcCommand::GetSnapshot {} => {
+                if (self.observation.is_none() || self.snapshot.status == DaemonStatus::Degraded)
+                    && self.active()
+                    && !self.quarantine
+                    && self.flight.is_none()
+                    && self.late_read.is_none()
+                {
+                    self.inspect_requested = true;
+                    self.inspect_retry_at = None;
+                }
+                Ok(IpcReply::Snapshot {
+                    snapshot: (*self.snapshot).clone(),
+                })
+            }
             IpcCommand::SetSubscriptions { topics } => {
                 if topics.validate_for(client).is_err() || topics.telemetry && !verified_ui {
                     Err(ErrorCode::Unsupported)
@@ -697,12 +739,13 @@ impl Coordinator {
     }
 
     fn schedule(&mut self, now: Instant, sample_due: bool) {
-        if self.flight.is_some() {
+        if self.flight.is_some() || self.late_read.is_some() {
             return;
         }
         if self.active() && !self.quarantine && self.inspect_requested {
             let topology = std::mem::take(&mut self.topology_requested);
             self.inspect_requested = false;
+            self.inspect_retry_at = None;
             if self.submit(
                 Work::Inspect { topology },
                 Inflight::Inspect,
@@ -748,7 +791,7 @@ impl Coordinator {
             self.submit(
                 Work::Sample,
                 Inflight::Sample(self.telemetry.generation),
-                now + INSPECT_BUDGET,
+                now + SAMPLE_BUDGET,
                 None,
             );
         }
@@ -969,8 +1012,59 @@ impl Coordinator {
         }
     }
 
+    fn arm_inspect_retry(&mut self, now: Instant) {
+        let index = (self.inspect_retry_failures as usize).min(INSPECT_RETRY_DELAYS.len() - 1);
+        self.inspect_retry_failures = self.inspect_retry_failures.saturating_add(1);
+        self.inspect_retry_at = Some(now + INSPECT_RETRY_DELAYS[index]);
+    }
+
+    fn apply_inspection(&mut self, observation: Observation, topology: Option<u16>) {
+        self.initialized = true;
+        self.inspect_retry_failures = 0;
+        self.inspect_retry_at = None;
+        self.sample_timeouts = 0;
+        self.observation = Some(observation);
+        self.publish();
+        self.leases.reconcile_observation();
+        if let Some(count) = topology {
+            self.update_topology(count);
+        }
+    }
+
     fn on_completion(&mut self, completion: Completion, now: Instant) {
         let Some(flight) = self.flight.take() else {
+            if let Some(late) = self.late_read.take() {
+                self.store
+                    .diagnostic("watchdog: late read-only HAL worker finished; resuming");
+                match (late.inspect, completion) {
+                    (true, Completion::Inspect(Ok(observation), topology))
+                        if late.epoch == self.epoch && self.active() && !self.quarantine =>
+                    {
+                        self.apply_inspection(observation, topology);
+                    }
+                    (true, Completion::Inspect(Err(error), _)) => {
+                        self.store.diagnostic(&format!(
+                            "hardware inspect failed after budget: {error:?}; scheduling retry"
+                        ));
+                        if self.active() && !self.quarantine {
+                            self.arm_inspect_retry(now);
+                        }
+                    }
+                    (true, _) => {
+                        if self.observation.is_none() && self.active() && !self.quarantine {
+                            self.inspect_requested = true;
+                        }
+                    }
+                    (false, Completion::Sample(Ok(_))) => {
+                        self.sample_timeouts = 0;
+                    }
+                    (false, Completion::Sample(Err(error))) => {
+                        self.store
+                            .diagnostic(&format!("late telemetry sample failed: {error:?}"));
+                    }
+                    (false, _) => {}
+                }
+            }
             return;
         };
         let same_epoch = flight.epoch == self.epoch;
@@ -983,24 +1077,39 @@ impl Coordinator {
                 self.system_reply(source, Err(error))
             }
             (Inflight::Inspect, Completion::Inspect(result, topology)) => {
-                if matches!(result, Err(HalError::TimedOut)) {
-                    self.quarantine = true;
-                }
                 if same_epoch {
                     self.initialized = true;
-                    self.observation = result.ok();
-                    self.publish();
-                    self.leases.reconcile_observation();
-                    if let Some(count) = topology {
-                        self.update_topology(count);
+                    match result {
+                        Ok(observation) => self.apply_inspection(observation, topology),
+                        Err(error) => {
+                            self.store.diagnostic(&format!(
+                                "hardware inspect failed: {error:?}; scheduling retry"
+                            ));
+                            self.observation = None;
+                            self.publish();
+                            if self.active() && !self.quarantine {
+                                self.arm_inspect_retry(now);
+                            }
+                        }
                     }
+                } else if self.observation.is_none() && self.active() && !self.quarantine {
+                    self.inspect_requested = true;
                 }
             }
             (Inflight::Sample(generation), Completion::Sample(sample)) => {
-                if sample == Err(HalError::TimedOut) {
-                    self.quarantine = true;
-                    self.observation = None;
-                    self.publish();
+                match &sample {
+                    Ok(_) => self.sample_timeouts = 0,
+                    Err(HalError::TimedOut) => {
+                        self.sample_timeouts = self.sample_timeouts.saturating_add(1);
+                        if self.sample_timeouts >= MAX_CONSECUTIVE_SAMPLE_TIMEOUTS {
+                            self.sample_timeouts = 0;
+                            self.store.diagnostic(
+                                "telemetry timed out repeatedly; refreshing hardware snapshot",
+                            );
+                            self.inspect_requested = true;
+                        }
+                    }
+                    Err(_) => {}
                 }
                 if self.telemetry.next.is_some()
                     && generation == self.telemetry.generation
@@ -1027,6 +1136,9 @@ impl Coordinator {
             ) => {
                 let target = change.target();
                 if result == Err(ErrorCode::TimedOut) {
+                    self.store.diagnostic(
+                        "control transaction timed out; entering fail-closed quarantine",
+                    );
                     self.quarantine = true;
                 }
                 self.ec_recovery |= hal::is_ec(target)
@@ -1085,8 +1197,15 @@ impl Coordinator {
                 }
                 self.control_reply(source, Err(error))
             }
-            (Inflight::Inspect | Inflight::Sample(_), Completion::Skipped(_)) => {}
+            (Inflight::Inspect, Completion::Skipped(_)) => {
+                if self.observation.is_none() && self.active() && !self.quarantine {
+                    self.arm_inspect_retry(now);
+                }
+            }
+            (Inflight::Sample(_), Completion::Skipped(_)) => {}
             _ => {
+                self.store
+                    .diagnostic("unexpected HAL completion mismatch; entering quarantine");
                 self.quarantine = true;
                 self.observation = None;
                 self.publish();
@@ -1098,29 +1217,67 @@ impl Coordinator {
         let Some(flight) = self.flight.take() else {
             return;
         };
-        self.quarantine = true;
         let canceled = flight.ticket.stop_before_write();
-        if let Inflight::System { source, .. } = flight.kind {
-            self.system_reply(
-                source,
-                Err(if canceled {
+        match flight.kind {
+            Inflight::Inspect => {
+                self.store.diagnostic(
+                    "watchdog: hardware inspect exceeded budget; awaiting worker before retry",
+                );
+                self.late_read = Some(LateRead {
+                    epoch: flight.epoch,
+                    inspect: true,
+                });
+                self.initialized = true;
+                self.observation = None;
+                self.publish();
+                return;
+            }
+            Inflight::Sample(_) => {
+                self.store.diagnostic(
+                    "watchdog: telemetry sample exceeded budget; awaiting worker",
+                );
+                self.late_read = Some(LateRead {
+                    epoch: flight.epoch,
+                    inspect: false,
+                });
+                self.sample_timeouts = self.sample_timeouts.saturating_add(1);
+                if self.sample_timeouts >= MAX_CONSECUTIVE_SAMPLE_TIMEOUTS {
+                    self.sample_timeouts = 0;
+                    self.inspect_requested = true;
+                }
+                return;
+            }
+            Inflight::System { source, .. } => {
+                self.store.diagnostic(
+                    "watchdog: system tools transaction exceeded budget; entering quarantine",
+                );
+                self.quarantine = true;
+                self.system_reply(
+                    source,
+                    Err(if canceled {
+                        ErrorCode::Busy
+                    } else {
+                        ErrorCode::TimedOut
+                    }),
+                );
+            }
+            Inflight::Control { change, source, .. } => {
+                self.store.diagnostic(
+                    "watchdog: control transaction exceeded budget; entering quarantine",
+                );
+                self.quarantine = true;
+                self.ec_recovery |= hal::is_ec(change.target()) && !canceled;
+                let error = if canceled {
                     ErrorCode::Busy
                 } else {
                     ErrorCode::TimedOut
-                }),
-            );
-        } else if let Inflight::Control { change, source, .. } = flight.kind {
-            self.ec_recovery |= hal::is_ec(change.target()) && !canceled;
-            let error = if canceled {
-                ErrorCode::Busy
-            } else {
-                ErrorCode::TimedOut
-            };
-            self.control_reply(source, Err(error));
-            self.engine_event(AutomationEvent::ControlSettled {
-                target: change.target(),
-                result: Err(error),
-            });
+                };
+                self.control_reply(source, Err(error));
+                self.engine_event(AutomationEvent::ControlSettled {
+                    target: change.target(),
+                    result: Err(error),
+                });
+            }
         }
         self.observation = None;
         self.publish();
@@ -1232,8 +1389,13 @@ impl Coordinator {
                 self.epoch = self.epoch.wrapping_add(1);
                 self.observation = None;
                 self.inspect_requested = true;
-            } else if let Some(flight) = &self.flight {
-                flight.ticket.stop_before_write();
+                self.inspect_retry_at = None;
+                self.inspect_retry_failures = 0;
+            } else {
+                self.inspect_retry_at = None;
+                if let Some(flight) = &self.flight {
+                    flight.ticket.stop_before_write();
+                }
             }
             self.publish();
         }
@@ -1384,16 +1546,18 @@ impl Coordinator {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
+        let worker_idle = self.flight.is_none() && self.late_read.is_none();
         [
             self.pipe.next_deadline(),
             self.telemetry.next,
+            self.inspect_retry_at,
             self.topology_due,
             self.boost_until,
             self.qos.trim_deadline(),
             self.flight.as_ref().map(|flight| flight.by),
             self.engine_deadline().and_then(|ms| self.stamp(ms)),
             self.leases
-                .next_deadline(self.flight.is_none())
+                .next_deadline(worker_idle)
                 .and_then(|ms| self.stamp(ms)),
         ]
         .into_iter()
@@ -1405,6 +1569,13 @@ impl Coordinator {
 
     fn process_deadlines(&mut self, now: Instant) {
         let ms = self.now_ms(now);
+        let worker_idle = self.flight.is_none() && self.late_read.is_none();
+        if self.inspect_retry_at.is_some_and(|until| now >= until) {
+            self.inspect_retry_at = None;
+            if self.observation.is_none() && self.active() && !self.quarantine {
+                self.inspect_requested = true;
+            }
+        }
         if self.topology_due.is_some_and(|until| now >= until) {
             self.topology_due = None;
             self.topology_requested = true;
@@ -1416,10 +1587,10 @@ impl Coordinator {
         }
         if self
             .leases
-            .next_deadline(self.flight.is_none())
+            .next_deadline(worker_idle)
             .is_some_and(|due| due <= ms)
         {
-            self.leases.expire(ms, self.flight.is_none());
+            self.leases.expire(ms, worker_idle);
             if !self
                 .leases
                 .manual_targets()
@@ -1553,6 +1724,8 @@ impl Coordinator {
         self.qos.update_idle(
             !self.quarantine
                 && self.flight.is_none()
+                && self.late_read.is_none()
+                && self.inspect_retry_at.is_none()
                 && self.queue.is_empty()
                 && self.greetings.is_empty()
                 && self.topology_due.is_none()
