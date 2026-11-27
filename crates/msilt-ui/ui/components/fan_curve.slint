@@ -16,13 +16,14 @@ component StepGlyphButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    width: 16px;
-    height: 22px;
+    width: 19px;
+    height: 28px;
     border-radius: Theme.radius-sm;
     background: !root.enabled ? transparent
               : ta.pressed ? Theme.subtle-pressed
               : ta.has-hover ? Theme.subtle-hover
               : transparent;
+    border-width: 0px;
 
     ta := TouchArea {
         enabled: root.enabled;
@@ -32,21 +33,21 @@ component StepGlyphButton inherits Rectangle {
 
     // Crisp horizontal bar (−)
     Rectangle {
-        x: (parent.width - 7px) / 2;
-        y: (parent.height - 1.5px) / 2;
-        width: 7px;
-        height: 1.5px;
-        border-radius: 0.75px;
-        background: root.enabled ? Theme.text-2 : Theme.text-disabled;
+        x: (parent.width - 9px) / 2;
+        y: (parent.height - 1.75px) / 2;
+        width: 9px;
+        height: 1.75px;
+        border-radius: 0.875px;
+        background: root.enabled ? Theme.text : Theme.text-disabled;
     }
     // Crisp vertical bar (+)
     if root.plus : Rectangle {
-        x: (parent.width - 1.5px) / 2;
-        y: (parent.height - 7px) / 2;
-        width: 1.5px;
-        height: 7px;
-        border-radius: 0.75px;
-        background: root.enabled ? Theme.text-2 : Theme.text-disabled;
+        x: (parent.width - 1.75px) / 2;
+        y: (parent.height - 9px) / 2;
+        width: 1.75px;
+        height: 9px;
+        border-radius: 0.875px;
+        background: root.enabled ? Theme.text : Theme.text-disabled;
     }
 }
 
@@ -61,7 +62,7 @@ component KnotColumn inherits Rectangle {
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    height: 46px;
+    height: 54px;
     background: transparent;
 
     changed duty => {
@@ -82,22 +83,23 @@ component KnotColumn inherits Rectangle {
 
     VerticalLayout {
         alignment: center;
-        spacing: 2px;
+        spacing: 4px;
         padding-left: 1px;
         padding-right: 1px;
 
         Text {
             text: "" + root.temp + "°C";
-            font-size: 11px;
+            font-size: 12px;
             font-family: Theme.font-mono;
-            color: Theme.text-3;
+            font-weight: 600;
+            color: Theme.text-2;
             horizontal-alignment: center;
             vertical-alignment: center;
-            height: 15px;
+            height: 17px;
         }
 
         HorizontalLayout {
-            height: 24px;
+            height: 28px;
             spacing: 1px;
             alignment: center;
 
@@ -112,8 +114,10 @@ component KnotColumn inherits Rectangle {
             }
 
             input-box := Rectangle {
-                width: 42px;
-                height: 22px;
+                horizontal-stretch: 1;
+                min-width: 38px;
+                max-width: 56px;
+                height: 28px;
                 border-radius: Theme.radius-sm;
                 background: !root.enabled ? transparent
                           : duty-input.has-focus ? Theme.card
@@ -135,7 +139,7 @@ component KnotColumn inherits Rectangle {
                         input-type: number;
                         single-line: true;
                         read-only: !root.enabled;
-                        font-size: 12px;
+                        font-size: 13px;
                         font-family: Theme.font-mono;
                         font-weight: 600;
                         color: root.enabled ? Theme.text : Theme.text-disabled;
@@ -156,8 +160,8 @@ component KnotColumn inherits Rectangle {
 
                     Text {
                         text: "%";
-                        width: 9px;
-                        font-size: 11px;
+                        width: 10px;
+                        font-size: 12px;
                         font-family: Theme.font-mono;
                         color: root.enabled ? Theme.text-3 : Theme.text-disabled;
                         horizontal-alignment: left;
@@ -213,11 +217,11 @@ export component FanCurveEditor inherits Rectangle {
     horizontal-stretch: 1;
     clip: true;
 
-    // ── plot geometry ───────────────────────────────────────────────────────
-    property <length> pad-l: 32px;
-    property <length> pad-r: 14px;
-    property <length> pad-t: 12px;
-    property <length> pad-b: 22px;
+    // ── plot geometry (zoomed active thermal range: 0..t1 = 12%, t1..t5 = 76%, t5..100 = 12%) ─
+    property <length> pad-l: 38px;
+    property <length> pad-r: 12px;
+    property <length> pad-t: 14px;
+    property <length> pad-b: 25px;
     property <length> plot-w: max(40px, canvas.width - root.pad-l - root.pad-r);
     property <length> plot-h: max(30px, canvas.height - root.pad-t - root.pad-b);
     property <bool> ready: root.points.length == 6;
@@ -254,9 +258,22 @@ export component FanCurveEditor inherits Rectangle {
         return root.disp-d5;
     }
 
+    pure function temp-to-x(t: float) -> length {
+        if !root.ready {
+            return root.pad-l + (clamp(t, 0.0, 100.0) / 100.0) * root.plot-w;
+        }
+        let t1 = max(10.0, root.points[1].temp * 1.0);
+        let t5 = max(t1 + 10.0, root.points[5].temp * 1.0);
+        let tc = clamp(t, 0.0, 100.0);
+        let u = tc <= t1 ? (tc / t1) * 0.12
+              : tc <= t5 ? 0.12 + ((tc - t1) / (t5 - t1)) * 0.76
+              : 0.88 + ((tc - t5) / max(1.0, 100.0 - t5)) * 0.12;
+        return root.pad-l + u * root.plot-w;
+    }
+
     pure function px(i: int) -> length {
         if i < 0 || i >= root.points.length { return 0px; }
-        return root.pad-l + (root.points[i].temp / 100.0) * root.plot-w;
+        return root.temp-to-x(root.points[i].temp * 1.0);
     }
 
     pure function temp-at(i: int) -> int {
@@ -314,34 +331,41 @@ export component FanCurveEditor inherits Rectangle {
     }
 
     pure function line-cmd(a0: float, a1: float, a2: float, a3: float, a4: float, a5: float) -> string {
+        let rx = root.n(root.pad-l + root.plot-w);
         return "M" + root.n(root.px(0)) + " " + root.n(root.pyf(a0))
              + " L" + root.n(root.px(1)) + " " + root.n(root.pyf(a1))
              + " L" + root.n(root.px(2)) + " " + root.n(root.pyf(a2))
              + " L" + root.n(root.px(3)) + " " + root.n(root.pyf(a3))
              + " L" + root.n(root.px(4)) + " " + root.n(root.pyf(a4))
-             + " L" + root.n(root.px(5)) + " " + root.n(root.pyf(a5));
+             + " L" + root.n(root.px(5)) + " " + root.n(root.pyf(a5))
+             + " L" + rx + " " + root.n(root.pyf(a5));
     }
 
     pure function floor-zone-cmd(f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
         let b = root.n(root.base-y());
+        let rx = root.n(root.pad-l + root.plot-w);
         return "M" + root.n(root.px(0)) + " " + root.n(root.py(f0))
              + " L" + root.n(root.px(1)) + " " + root.n(root.py(f1))
              + " L" + root.n(root.px(2)) + " " + root.n(root.py(f2))
              + " L" + root.n(root.px(3)) + " " + root.n(root.py(f3))
              + " L" + root.n(root.px(4)) + " " + root.n(root.py(f4))
              + " L" + root.n(root.px(5)) + " " + root.n(root.py(f5))
-             + " L" + root.n(root.px(5)) + " " + b
+             + " L" + rx + " " + root.n(root.py(f5))
+             + " L" + rx + " " + b
              + " L" + root.n(root.px(0)) + " " + b + " Z";
     }
 
     pure function span-cmd(c0: float, c1: float, c2: float, c3: float, c4: float, c5: float,
                            f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
+        let rx = root.n(root.pad-l + root.plot-w);
         return "M" + root.n(root.px(0)) + " " + root.n(root.pyf(c0))
              + " L" + root.n(root.px(1)) + " " + root.n(root.pyf(c1))
              + " L" + root.n(root.px(2)) + " " + root.n(root.pyf(c2))
              + " L" + root.n(root.px(3)) + " " + root.n(root.pyf(c3))
              + " L" + root.n(root.px(4)) + " " + root.n(root.pyf(c4))
              + " L" + root.n(root.px(5)) + " " + root.n(root.pyf(c5))
+             + " L" + rx + " " + root.n(root.pyf(c5))
+             + " L" + rx + " " + root.n(root.py(f5))
              + " L" + root.n(root.px(5)) + " " + root.n(root.py(f5))
              + " L" + root.n(root.px(4)) + " " + root.n(root.py(f4))
              + " L" + root.n(root.px(3)) + " " + root.n(root.py(f3))
@@ -380,12 +404,12 @@ export component FanCurveEditor inherits Rectangle {
 
     pure function live-x() -> length {
         if root.live-temp < 0 { return 0px; }
-        return root.pad-l + (root.disp-live-temp / 100.0) * root.plot-w;
+        return root.temp-to-x(root.disp-live-temp);
     }
 
     VerticalLayout {
         padding: 10px;
-        spacing: 8px;
+        spacing: 9px;
 
         // ── sleek header (no duplicate per-card Apply/Reset buttons) ────────
         HorizontalLayout {
@@ -420,8 +444,9 @@ export component FanCurveEditor inherits Rectangle {
                 text: root.live-temp < 0
                     ? "无读数"
                     : ("" + root.live-temp + "°C · " + Fmt.rpm(root.live-rpm));
-                font-size: Theme.font-caption;
+                font-size: 13px;
                 font-family: Theme.font-mono;
+                font-weight: 500;
                 color: Theme.text-2;
                 vertical-alignment: center;
             }
@@ -446,12 +471,12 @@ export component FanCurveEditor inherits Rectangle {
             }
             for k in 6 : Text {
                 x: 0px;
-                y: root.py(Math.round(k * root.max-duty / 5.0)) - 6px;
-                width: root.pad-l - 6px;
+                y: root.py(Math.round(k * root.max-duty / 5.0)) - 7px;
+                width: root.pad-l - 9px;
                 text: "" + Math.round(k * root.max-duty / 5.0);
-                font-size: 9px;
+                font-size: 11px;
                 font-family: Theme.font-mono;
-                color: Theme.text-3;
+                color: Theme.text-2;
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }
@@ -487,7 +512,7 @@ export component FanCurveEditor inherits Rectangle {
                     root.eff-d(3), root.eff-d(4), root.eff-d(5),
                     root.floor-at(0), root.floor-at(1), root.floor-at(2),
                     root.floor-at(3), root.floor-at(4), root.floor-at(5));
-                fill: (root.custom-active || root.dirty) ? Theme.accent.with-alpha(0.13) : Theme.accent.with-alpha(0.06);
+                fill: (root.custom-active || root.dirty) ? Theme.accent.with-alpha(0.14) : Theme.accent.with-alpha(0.07);
                 stroke: transparent;
             }
 
@@ -499,8 +524,8 @@ export component FanCurveEditor inherits Rectangle {
                 commands: root.line-cmd(
                     root.floor-at(0), root.floor-at(1), root.floor-at(2),
                     root.floor-at(3), root.floor-at(4), root.floor-at(5));
-                stroke: Theme.danger.with-alpha(0.60);
-                stroke-width: 1px;
+                stroke: Theme.danger.with-alpha(0.65);
+                stroke-width: 1.25px;
                 stroke-dash-array: [4px, 3px];
                 stroke-line-cap: butt;
                 fill: transparent;
@@ -516,30 +541,30 @@ export component FanCurveEditor inherits Rectangle {
                     root.eff-d(3), root.eff-d(4), root.eff-d(5));
                 stroke: root.readonly ? Theme.text-3
                       : (root.custom-active || root.dirty) ? Theme.accent
-                      : Theme.accent.with-alpha(0.55);
-                stroke-width: 2px;
+                      : Theme.accent.with-alpha(0.60);
+                stroke-width: 2.5px;
                 stroke-line-cap: round;
                 stroke-line-join: round;
                 fill: transparent;
             }
 
-            // subtle in-plot legend (top-left open area: clarifies blue vs red at a glance)
+            // crisp in-plot legend (top-left open area: clarifies blue vs red at a glance)
             HorizontalLayout {
                 x: root.pad-l + 8px;
-                y: root.pad-t + 4px;
-                height: 14px;
+                y: root.pad-t + 5px;
+                height: 16px;
                 alignment: start;
-                spacing: 12px;
+                spacing: 14px;
 
                 HorizontalLayout {
-                    spacing: 4px;
-                    VerticalLayout { alignment: center; Rectangle { width: 10px; height: 2px; border-radius: 1px; background: Theme.accent; } }
-                    Text { text: "设定 / 裕量"; font-size: 9px; color: Theme.text-3; vertical-alignment: center; }
+                    spacing: 5px;
+                    VerticalLayout { alignment: center; Rectangle { width: 12px; height: 2.5px; border-radius: 1.25px; background: Theme.accent; } }
+                    Text { text: "设定 / 裕量"; font-size: 11px; color: Theme.text-2; vertical-alignment: center; }
                 }
                 HorizontalLayout {
-                    spacing: 4px;
-                    VerticalLayout { alignment: center; Rectangle { width: 10px; height: 6px; border-radius: 1.5px; background: Theme.danger.with-alpha(0.24); border-width: 1px; border-color: Theme.danger.with-alpha(0.55); } }
-                    Text { text: "安全底线 / 禁区"; font-size: 9px; color: Theme.text-3; vertical-alignment: center; }
+                    spacing: 5px;
+                    VerticalLayout { alignment: center; Rectangle { width: 12px; height: 7px; border-radius: 1.5px; background: Theme.danger.with-alpha(0.24); border-width: 1px; border-color: Theme.danger.with-alpha(0.55); } }
+                    Text { text: "安全底线 / 禁区"; font-size: 11px; color: Theme.text-2; vertical-alignment: center; }
                 }
             }
 
@@ -549,51 +574,51 @@ export component FanCurveEditor inherits Rectangle {
                 y: root.pad-t;
                 width: 1px;
                 height: root.plot-h;
-                background: Theme.text.with-alpha(0.24);
+                background: Theme.text.with-alpha(0.26);
             }
             if root.live-temp >= 0 && root.ready : Rectangle {
-                x: root.live-x() - 4px;
-                y: root.pyf(root.disp-live-duty) - 4px;
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
+                x: root.live-x() - 5px;
+                y: root.pyf(root.disp-live-duty) - 5px;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
                 background: Theme.accent;
-                border-width: 1px;
+                border-width: 1.5px;
                 border-color: Theme.inset;
             }
 
             // animated knots
             for i in 6 : Rectangle {
-                x: root.px(i) - 4px;
-                y: root.pyf(root.eff-d(i)) - 4px;
-                width: 8px;
-                height: 8px;
-                border-radius: root.locked-at(i) ? 1px : 4px;
+                x: root.px(i) - 5px;
+                y: root.pyf(root.eff-d(i)) - 5px;
+                width: 10px;
+                height: 10px;
+                border-radius: root.locked-at(i) ? 2px : 5px;
                 background: root.locked-at(i) ? Theme.text-3 : Theme.card;
-                border-width: 2px;
+                border-width: 2.25px;
                 border-color: root.readonly ? Theme.text-3
                             : (root.custom-active || root.dirty) ? Theme.accent
-                            : Theme.accent.with-alpha(0.55);
+                            : Theme.accent.with-alpha(0.60);
             }
 
-            // single crisp X axis temperature labels (clear 5px below plot baseline, °C unit at right)
+            // crisp X axis temperature labels (clear 6px below plot baseline, °C unit at right)
             for i in 6 : Text {
-                x: i == 0 ? root.px(0) - 3px : root.px(i) - 10px;
-                y: root.base-y() + 5px;
-                width: 20px;
+                x: i == 0 ? root.px(0) - 3px : root.px(i) - 13px;
+                y: root.base-y() + 6px;
+                width: 26px;
                 text: "" + root.temp-at(i);
-                font-size: 9px;
+                font-size: 11px;
                 font-family: Theme.font-mono;
-                color: Theme.text-3;
+                color: Theme.text-2;
                 horizontal-alignment: i == 0 ? left : center;
                 vertical-alignment: center;
             }
             Text {
                 x: canvas.width - 24px;
-                y: root.base-y() + 5px;
+                y: root.base-y() + 6px;
                 width: 18px;
                 text: "°C";
-                font-size: 9px;
+                font-size: 11px;
                 font-family: Theme.font-mono;
                 color: Theme.text-3;
                 horizontal-alignment: right;
@@ -627,7 +652,7 @@ export component FanCurveEditor inherits Rectangle {
 
         // ── flat single-row 5-knot inline stepper + direct numeric input bar ──
         HorizontalLayout {
-            height: 46px;
+            height: 54px;
             spacing: 0px;
 
             for i in 5 : HorizontalLayout {
@@ -641,7 +666,7 @@ export component FanCurveEditor inherits Rectangle {
                     width: 1px;
                     Rectangle {
                         width: 1px;
-                        height: 26px;
+                        height: 30px;
                         background: Theme.divider;
                     }
                 }

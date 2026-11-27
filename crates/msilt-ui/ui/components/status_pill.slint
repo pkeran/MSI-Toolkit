@@ -15,14 +15,9 @@ export component StatusPill inherits Rectangle {
     height: Theme.pill-h;
     border-radius: Theme.radius;
     background: root.clickable && ta.pressed ? Theme.subtle-pressed
-              : root.level == 2 ? Theme.danger-surface
-              : root.level == 1 ? Theme.warn-surface
-              : root.clickable && ta.has-hover ? Theme.btn-hover
-              : Theme.subtle-hover;
-    border-width: root.level == 2 || root.level == 1 ? 1px : 0px;
-    border-color: root.level == 2 ? Theme.danger.with-alpha(0.32)
-                : root.level == 1 ? Theme.warn.with-alpha(0.30)
-                : transparent;
+              : root.clickable && ta.has-hover ? Theme.subtle-hover
+              : transparent;
+    border-width: 0px;
     width: pill-layout.preferred-width;
 
     ta := TouchArea {
@@ -36,9 +31,9 @@ export component StatusPill inherits Rectangle {
     }
 
     pill-layout := HorizontalLayout {
-        padding-left: 9px;
-        padding-right: 10px;
-        spacing: 6px;
+        padding-left: 7px;
+        padding-right: 7px;
+        spacing: 5px;
 
         if root.level != 0 : VerticalLayout {
             alignment: center;

@@ -139,7 +139,7 @@ component OffsetRow inherits Rectangle {
         FluentButton {
             text: "−";
             compact: true;
-            variant: 0;
+            variant: 2;
             width: 30px;
             enabled: root.enabled && root.value > root.min-val;
             clicked => { root.edited(max(root.min-val, root.value - 5)); }
@@ -158,7 +158,7 @@ component OffsetRow inherits Rectangle {
         FluentButton {
             text: "+";
             compact: true;
-            variant: 0;
+            variant: 2;
             width: 30px;
             enabled: root.enabled && root.value < root.max-val;
             clicked => { root.edited(min(root.max-val, root.value + 5)); }
@@ -315,12 +315,12 @@ component GpuOffsetSection inherits VerticalLayout {
 
 component FanPresetAndCommitBar inherits HorizontalLayout {
     in property <bool> can-apply: false;
-    in property <bool> custom-active: false;
     spacing: 6px;
     height: 30px;
 
     VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         FluentButton {
             text: "静音底线";
             compact: true;
@@ -332,6 +332,7 @@ component FanPresetAndCommitBar inherits HorizontalLayout {
     }
     VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         FluentButton {
             text: "按需均衡";
             compact: true;
@@ -343,6 +344,7 @@ component FanPresetAndCommitBar inherits HorizontalLayout {
     }
     VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         FluentButton {
             text: "极限散热";
             compact: true;
@@ -353,13 +355,14 @@ component FanPresetAndCommitBar inherits HorizontalLayout {
         }
     }
 
-    VerticalLayout {
+    if AppState.curve-dirty || AppState.curve-apply-pending : VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         Rectangle { width: 1px; height: 14px; background: Theme.divider; }
     }
-
-    VerticalLayout {
+    if AppState.curve-dirty || AppState.curve-apply-pending : VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         FluentButton {
             text: "撤销";
             compact: true;
@@ -369,15 +372,15 @@ component FanPresetAndCommitBar inherits HorizontalLayout {
             clicked => { AppState.command(32, -1, 0); }
         }
     }
-    VerticalLayout {
+    if AppState.curve-dirty || AppState.curve-apply-pending : VerticalLayout {
         alignment: center;
+        horizontal-stretch: 0;
         FluentButton {
-            text: AppState.curve-apply-pending ? "应用中"
-                : (AppState.curve-dirty ? "应用并保存" : (root.custom-active ? "已生效" : "启用自定义"));
+            text: AppState.curve-apply-pending ? "应用中" : "保存曲线";
             compact: true;
             variant: 1;
-            width: 84px;
-            enabled: root.can-apply && !AppState.curve-apply-pending && (AppState.curve-dirty || !root.custom-active) && AppState.curve-error == "";
+            width: 78px;
+            enabled: root.can-apply && !AppState.curve-apply-pending && AppState.curve-dirty && AppState.curve-error == "";
             clicked => { AppState.command(31, -1, 0); }
         }
     }
@@ -389,15 +392,15 @@ export component PerformancePage inherits Rectangle {
     horizontal-stretch: 1;
 
     property <bool> wide-top: root.width >= 760px;
-    property <bool> wide-curves: root.width >= 840px;
-    property <bool> wide-toolbar: root.width >= 850px;
+    property <bool> wide-curves: root.width >= 880px;
+    property <bool> wide-toolbar: root.width >= 820px;
     property <bool> silent-mode: AppState.performance-mode == 1;
     property <bool> custom-active: !AppState.cooler-boost && AppState.fan-mode == 2;
     property <bool> can-apply-fan: AppState.cap-fan && AppState.ec-writable && !AppState.cooler-boost && !root.silent-mode && AppState.interactive;
     property <int> fan-strategy-idx: AppState.cooler-boost || root.silent-mode ? -1 : (AppState.fan-mode == 2 ? 1 : 0);
     property <length> curve-canvas-h: root.wide-curves
-        ? clamp(root.viewport-h - 240px, 184px, 260px)
-        : 204px;
+        ? clamp(root.viewport-h - 210px, 212px, 286px)
+        : 224px;
 
     VerticalLayout {
         alignment: start;
@@ -475,7 +478,6 @@ export component PerformancePage inherits Rectangle {
 
                 if root.wide-toolbar : FanPresetAndCommitBar {
                     can-apply: root.can-apply-fan;
-                    custom-active: root.custom-active;
                 }
             }
 
@@ -484,7 +486,6 @@ export component PerformancePage inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; background: transparent; }
                 FanPresetAndCommitBar {
                     can-apply: root.can-apply-fan;
-                    custom-active: root.custom-active;
                 }
             }
 
