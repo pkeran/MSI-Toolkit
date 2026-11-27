@@ -198,17 +198,13 @@ export component FanCurveEditor inherits Rectangle {
     in property <int> live-rpm: -1;
     in property <int> live-duty: -1;
     in property <bool> readonly: false;
-    in property <bool> can-apply: true;
     in property <bool> custom-active: false;
-    in property <bool> blocked-by-mode: false;
     in property <bool> pending: false;
     in property <bool> dirty: false;
     in property <string> error: "";
     in property <length> canvas-height: 196px;
 
     callback edit(index: int, duty: int);
-    callback apply();
-    callback reset();
 
     background: Theme.card;
     border-radius: Theme.radius-card;
@@ -225,6 +221,38 @@ export component FanCurveEditor inherits Rectangle {
     property <length> plot-w: max(40px, canvas.width - root.pad-l - root.pad-r);
     property <length> plot-h: max(30px, canvas.height - root.pad-t - root.pad-b);
     property <bool> ready: root.points.length == 6;
+
+    // Smooth 220ms cubic-bezier morphing on mode switches, presets, undo, and numeric typing.
+    // Bypassed during pointer drag (`eff-d`) so dragging stays 0ms immediate and crisp.
+    property <float> disp-d0: root.duty-at(0);
+    property <float> disp-d1: root.duty-at(1);
+    property <float> disp-d2: root.duty-at(2);
+    property <float> disp-d3: root.duty-at(3);
+    property <float> disp-d4: root.duty-at(4);
+    property <float> disp-d5: root.duty-at(5);
+    property <float> disp-live-temp: max(0, root.live-temp);
+    property <float> disp-live-duty: max(0, root.live-y-duty());
+
+    animate disp-d0, disp-d1, disp-d2, disp-d3, disp-d4, disp-d5 {
+        duration: Theme.reduced-motion ? 0ms : 220ms;
+        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
+    }
+    animate disp-live-temp, disp-live-duty {
+        duration: Theme.reduced-motion ? 0ms : 180ms;
+        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
+    }
+
+    pure function eff-d(i: int) -> float {
+        if drag-touch.pressed {
+            return root.duty-at(i) * 1.0;
+        }
+        if i == 0 { return root.disp-d0; }
+        if i == 1 { return root.disp-d1; }
+        if i == 2 { return root.disp-d2; }
+        if i == 3 { return root.disp-d3; }
+        if i == 4 { return root.disp-d4; }
+        return root.disp-d5;
+    }
 
     pure function px(i: int) -> length {
         if i < 0 || i >= root.points.length { return 0px; }
@@ -255,6 +283,10 @@ export component FanCurveEditor inherits Rectangle {
         return root.pad-t + (1.0 - duty / (root.max-duty * 1.0)) * root.plot-h;
     }
 
+    pure function pyf(duty: float) -> length {
+        return root.pad-t + (1.0 - duty / (root.max-duty * 1.0)) * root.plot-h;
+    }
+
     pure function base-y() -> length {
         return root.pad-t + root.plot-h;
     }
@@ -281,13 +313,13 @@ export component FanCurveEditor inherits Rectangle {
         return v / 1px;
     }
 
-    pure function line-cmd(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int) -> string {
-        return "M" + root.n(root.px(0)) + " " + root.n(root.py(a0))
-             + " L" + root.n(root.px(1)) + " " + root.n(root.py(a1))
-             + " L" + root.n(root.px(2)) + " " + root.n(root.py(a2))
-             + " L" + root.n(root.px(3)) + " " + root.n(root.py(a3))
-             + " L" + root.n(root.px(4)) + " " + root.n(root.py(a4))
-             + " L" + root.n(root.px(5)) + " " + root.n(root.py(a5));
+    pure function line-cmd(a0: float, a1: float, a2: float, a3: float, a4: float, a5: float) -> string {
+        return "M" + root.n(root.px(0)) + " " + root.n(root.pyf(a0))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.pyf(a1))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.pyf(a2))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.pyf(a3))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.pyf(a4))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.pyf(a5));
     }
 
     pure function floor-zone-cmd(f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
@@ -302,14 +334,14 @@ export component FanCurveEditor inherits Rectangle {
              + " L" + root.n(root.px(0)) + " " + b + " Z";
     }
 
-    pure function span-cmd(c0: int, c1: int, c2: int, c3: int, c4: int, c5: int,
+    pure function span-cmd(c0: float, c1: float, c2: float, c3: float, c4: float, c5: float,
                            f0: int, f1: int, f2: int, f3: int, f4: int, f5: int) -> string {
-        return "M" + root.n(root.px(0)) + " " + root.n(root.py(c0))
-             + " L" + root.n(root.px(1)) + " " + root.n(root.py(c1))
-             + " L" + root.n(root.px(2)) + " " + root.n(root.py(c2))
-             + " L" + root.n(root.px(3)) + " " + root.n(root.py(c3))
-             + " L" + root.n(root.px(4)) + " " + root.n(root.py(c4))
-             + " L" + root.n(root.px(5)) + " " + root.n(root.py(c5))
+        return "M" + root.n(root.px(0)) + " " + root.n(root.pyf(c0))
+             + " L" + root.n(root.px(1)) + " " + root.n(root.pyf(c1))
+             + " L" + root.n(root.px(2)) + " " + root.n(root.pyf(c2))
+             + " L" + root.n(root.px(3)) + " " + root.n(root.pyf(c3))
+             + " L" + root.n(root.px(4)) + " " + root.n(root.pyf(c4))
+             + " L" + root.n(root.px(5)) + " " + root.n(root.pyf(c5))
              + " L" + root.n(root.px(5)) + " " + root.n(root.py(f5))
              + " L" + root.n(root.px(4)) + " " + root.n(root.py(f4))
              + " L" + root.n(root.px(3)) + " " + root.n(root.py(f3))
@@ -348,17 +380,17 @@ export component FanCurveEditor inherits Rectangle {
 
     pure function live-x() -> length {
         if root.live-temp < 0 { return 0px; }
-        return root.pad-l + (root.live-temp / 100.0) * root.plot-w;
+        return root.pad-l + (root.disp-live-temp / 100.0) * root.plot-w;
     }
 
     VerticalLayout {
         padding: 10px;
         spacing: 8px;
 
-        // ── header ──────────────────────────────────────────────────────────
+        // ── sleek header (no duplicate per-card Apply/Reset buttons) ────────
         HorizontalLayout {
             spacing: 6px;
-            height: Theme.control-h;
+            height: 24px;
 
             Text {
                 text: root.title;
@@ -367,18 +399,19 @@ export component FanCurveEditor inherits Rectangle {
                 color: Theme.text;
                 vertical-alignment: center;
             }
-            VerticalLayout {
+            if root.readonly : VerticalLayout {
                 alignment: center;
                 Chip {
-                    text: root.readonly ? "只读"
-                        : !root.can-apply ? (root.blocked-by-mode ? "已接管" : "仅预览")
-                        : root.custom-active ? "生效中"
-                        : "待启用";
-                    level: root.readonly ? 1
-                        : !root.can-apply ? 1
-                        : root.custom-active ? 3
-                        : 0;
-                    glyph: root.readonly || !root.can-apply ? "lock" : "";
+                    text: "只读";
+                    level: 1;
+                    glyph: "lock";
+                }
+            }
+            if !root.readonly && root.dirty : VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: "已修改";
+                    level: 1;
                 }
             }
             Rectangle { horizontal-stretch: 1; background: transparent; }
@@ -391,29 +424,6 @@ export component FanCurveEditor inherits Rectangle {
                 font-family: Theme.font-mono;
                 color: Theme.text-2;
                 vertical-alignment: center;
-            }
-
-            VerticalLayout {
-                alignment: center;
-                FluentButton {
-                    text: "恢复";
-                    compact: true;
-                    variant: 0;
-                    width: 64px;
-                    enabled: !root.readonly && !root.pending && root.dirty;
-                    clicked => { root.reset(); }
-                }
-            }
-            VerticalLayout {
-                alignment: center;
-                FluentButton {
-                    text: root.pending ? "应用中" : (root.dirty || root.custom-active ? "应用" : "启用");
-                    compact: true;
-                    variant: 1;
-                    width: 64px;
-                    enabled: !root.readonly && root.can-apply && !root.pending && (root.dirty || !root.custom-active) && root.error == "";
-                    clicked => { root.apply(); }
-                }
             }
         }
 
@@ -467,17 +477,17 @@ export component FanCurveEditor inherits Rectangle {
                 stroke: transparent;
             }
 
-            // allowed span between floor and preview
+            // allowed span between floor and animated preview
             if root.ready : Path {
                 viewbox-width: root.n(canvas.width);
                 viewbox-height: root.n(canvas.height);
                 fit: fill;
                 commands: root.span-cmd(
-                    root.duty-at(0), root.duty-at(1), root.duty-at(2),
-                    root.duty-at(3), root.duty-at(4), root.duty-at(5),
+                    root.eff-d(0), root.eff-d(1), root.eff-d(2),
+                    root.eff-d(3), root.eff-d(4), root.eff-d(5),
                     root.floor-at(0), root.floor-at(1), root.floor-at(2),
                     root.floor-at(3), root.floor-at(4), root.floor-at(5));
-                fill: (root.custom-active || root.dirty) ? Theme.accent.with-alpha(0.12) : Theme.accent.with-alpha(0.05);
+                fill: (root.custom-active || root.dirty) ? Theme.accent.with-alpha(0.13) : Theme.accent.with-alpha(0.06);
                 stroke: transparent;
             }
 
@@ -496,24 +506,44 @@ export component FanCurveEditor inherits Rectangle {
                 fill: transparent;
             }
 
-            // previewed curve
+            // animated previewed curve
             if root.ready : Path {
                 viewbox-width: root.n(canvas.width);
                 viewbox-height: root.n(canvas.height);
                 fit: fill;
                 commands: root.line-cmd(
-                    root.duty-at(0), root.duty-at(1), root.duty-at(2),
-                    root.duty-at(3), root.duty-at(4), root.duty-at(5));
+                    root.eff-d(0), root.eff-d(1), root.eff-d(2),
+                    root.eff-d(3), root.eff-d(4), root.eff-d(5));
                 stroke: root.readonly ? Theme.text-3
                       : (root.custom-active || root.dirty) ? Theme.accent
-                      : Theme.accent.with-alpha(0.50);
+                      : Theme.accent.with-alpha(0.55);
                 stroke-width: 2px;
                 stroke-line-cap: round;
                 stroke-line-join: round;
                 fill: transparent;
             }
 
-            // live operating point
+            // subtle in-plot legend (top-left open area: clarifies blue vs red at a glance)
+            HorizontalLayout {
+                x: root.pad-l + 8px;
+                y: root.pad-t + 4px;
+                height: 14px;
+                alignment: start;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    VerticalLayout { alignment: center; Rectangle { width: 10px; height: 2px; border-radius: 1px; background: Theme.accent; } }
+                    Text { text: "设定 / 裕量"; font-size: 9px; color: Theme.text-3; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    VerticalLayout { alignment: center; Rectangle { width: 10px; height: 6px; border-radius: 1.5px; background: Theme.danger.with-alpha(0.24); border-width: 1px; border-color: Theme.danger.with-alpha(0.55); } }
+                    Text { text: "安全底线 / 禁区"; font-size: 9px; color: Theme.text-3; vertical-alignment: center; }
+                }
+            }
+
+            // live operating point (smoothly glides across 1Hz telemetry)
             if root.live-temp >= 0 : Rectangle {
                 x: root.live-x();
                 y: root.pad-t;
@@ -523,7 +553,7 @@ export component FanCurveEditor inherits Rectangle {
             }
             if root.live-temp >= 0 && root.ready : Rectangle {
                 x: root.live-x() - 4px;
-                y: root.py(root.live-y-duty()) - 4px;
+                y: root.pyf(root.disp-live-duty) - 4px;
                 width: 8px;
                 height: 8px;
                 border-radius: 4px;
@@ -532,10 +562,10 @@ export component FanCurveEditor inherits Rectangle {
                 border-color: Theme.inset;
             }
 
-            // knots
+            // animated knots
             for i in 6 : Rectangle {
                 x: root.px(i) - 4px;
-                y: root.py(root.duty-at(i)) - 4px;
+                y: root.pyf(root.eff-d(i)) - 4px;
                 width: 8px;
                 height: 8px;
                 border-radius: root.locked-at(i) ? 1px : 4px;

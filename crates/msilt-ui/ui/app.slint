@@ -10,6 +10,7 @@ import { NavItem } from "components/nav_item.slint";
 import { StatusPill } from "components/status_pill.slint";
 import { Banner } from "components/banner.slint";
 import { Toast } from "components/toast.slint";
+import { HelpPopover } from "components/help_popover.slint";
 import { DashboardPage } from "pages/dashboard.slint";
 import { PerformancePage } from "pages/performance.slint";
 import { DisplayPage } from "pages/display.slint";
@@ -50,6 +51,10 @@ export component AppWindow inherits Window {
 
     keys := FocusScope {
         key-pressed(e) => {
+            if e.text == Key.Escape && AppState.help-topic > 0 {
+                AppState.command(65, 0, 0);
+                return accept;
+            }
             if e.modifiers.control {
                 if e.text == "1" { AppState.command(10, 0, 0); return accept; }
                 if e.text == "2" { AppState.command(10, 1, 0); return accept; }
@@ -359,6 +364,18 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+
+                // ── Floating Help Popover (click-outside / Escape dismiss, zero layout shift) ─
+                HelpPopover {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    topic: AppState.help-topic;
+                    gpu-oc-range: Fmt.offset-mhz(AppState.gpu-oc-core-min) + " ~ " + Fmt.offset-mhz(AppState.gpu-oc-core-max);
+                    saved-modes: AppState.custom-fan-modes-summary;
+                    dismiss => { AppState.command(65, 0, 0); }
                 }
 
                 // ── Bottom-right floating animated Toast overlay (0px layout shift, never covers headers/actions) ─

@@ -1,0 +1,199 @@
+// Floating Help Popover + subtle `?` trigger button (Win11 Fluent 2 / Magpie flat style).
+// Keeps explanatory guidance & safety notes out of the main flow until requested.
+
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+
+export component HelpIconButton inherits Rectangle {
+    in property <bool> active: false;
+    in property <string> label: "查看说明";
+    callback clicked();
+
+    width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.active ? Theme.accent-surface
+              : ta.pressed ? Theme.subtle-pressed
+              : ta.has-hover ? Theme.subtle-hover
+              : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.accent.with-alpha(0.35);
+    accessible-role: button;
+    accessible-label: root.label;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        glyph: "info";
+        size: 14px;
+        tint: root.active ? Theme.accent : (ta.has-hover ? Theme.text : Theme.text-3);
+    }
+}
+
+component HelpBullet inherits HorizontalLayout {
+    in property <string> heading: "";
+    in property <string> detail: "";
+    in property <color> dot-color: Theme.accent;
+
+    spacing: 10px;
+
+    VerticalLayout {
+        padding-top: 6px;
+        alignment: start;
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: root.dot-color;
+        }
+    }
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 2px;
+
+        Text {
+            text: root.heading;
+            font-size: Theme.font-caption;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        Text {
+            text: root.detail;
+            font-size: Theme.font-caption;
+            color: Theme.text-2;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component HelpPopover inherits Rectangle {
+    /// 0 = hidden, 1 = fan curves & mode memory, 2 = GPU clock offset safety
+    in property <int> topic: 0;
+    in property <string> gpu-oc-range: "0 MHz ~ +200 MHz";
+    in property <string> saved-modes: "";
+    callback dismiss();
+
+    background: transparent;
+
+    if root.topic > 0 : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: Theme.dark ? rgba(0, 0, 0, 0.36) : rgba(0, 0, 0, 0.14);
+
+        TouchArea {
+            clicked => { root.dismiss(); }
+        }
+
+        card := Rectangle {
+            width: min(468px, max(280px, parent.width - 48px));
+            height: body.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: clamp((parent.height - self.height) * 0.34, 24px, max(24px, parent.height - self.height - 24px));
+            border-radius: 10px;
+            background: Theme.toast-bg;
+            border-width: 1px;
+            border-color: Theme.toast-border;
+            clip: true;
+
+            // Swallow clicks inside the card so only clicking outside dismisses
+            TouchArea { }
+
+            body := VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 8px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            glyph: "info";
+                            size: 16px;
+                            tint: Theme.accent;
+                        }
+                    }
+
+                    Text {
+                        text: root.topic == 1 ? "风扇曲线与策略说明" : "显卡频率偏移安全说明";
+                        font-size: Theme.font-group;
+                        font-weight: 600;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    close-btn := Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: close-ta.pressed ? Theme.subtle-pressed
+                                  : close-ta.has-hover ? Theme.subtle-hover
+                                  : transparent;
+
+                        close-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.dismiss(); }
+                        }
+
+                        Text {
+                            text: "×";
+                            font-size: 15px;
+                            color: Theme.text-2;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.divider; }
+
+                if root.topic == 1 : VerticalLayout {
+                    spacing: 10px;
+
+                    HelpBullet {
+                        dot-color: Theme.danger;
+                        heading: "红虚线与红色区域（出厂安全底线 / 保护禁区）";
+                        detail: "红虚线为主板出厂最低转速底线，下方红色区域为热保护禁区；节点不能低于红线，确保高负载下不会因转速过低触发过热降频。";
+                    }
+                    HelpBullet {
+                        dot-color: Theme.accent;
+                        heading: "蓝实线与蓝色区域（当前曲线 / 额外散热裕量）";
+                        detail: "蓝线表示设定曲线，蓝色区域为相对底线额外增加的风量裕量；纵轴上限 150% 为 EC 满载排热占空比。拖动节点或直接键入百分比均可精确微调。";
+                    }
+                    HelpBullet {
+                        dot-color: Theme.ok;
+                        heading: "按性能模式独立记忆与双风扇联动";
+                        detail: root.saved-modes != ""
+                            ? ("当前已记忆模式：" + root.saved-modes + "。切换性能模式时会自动套用对应曲线；点击「主板自动」或切换至「静音」则交还主板自动调速。")
+                            : "点击「应用并保存」会将当前 CPU 与 GPU 双风扇曲线一并绑定到当前性能模式，日后切换模式时自动恢复；切回「主板自动」即交还主板温控。";
+                    }
+                }
+
+                if root.topic == 2 : VerticalLayout {
+                    spacing: 10px;
+
+                    HelpBullet {
+                        dot-color: Theme.accent;
+                        heading: "MSI 官方安全区间（" + root.gpu-oc-range + "）";
+                        detail: "通过标准 NVML 接口仅抬升 P0 高负载频率曲线，不修改核心电压、不突破主板功耗墙；桌面空载时仍自动降频降功耗，需要算力时按需满血释放。";
+                    }
+                    HelpBullet {
+                        dot-color: Theme.warn;
+                        heading: "供电约束与重启自动归零";
+                        detail: "仅接通交流电源时可应用非零偏移；电池模式下仍支持一键重置 0 MHz。系统重启后驱动会自动恢复默认 0 MHz，避免不稳定频率影响下次开机。";
+                    }
+                }
+            }
+        }
+    }
+}

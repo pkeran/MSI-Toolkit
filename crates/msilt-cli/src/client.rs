@@ -6,7 +6,7 @@ use msilt_core::ipc::{
     ClientKind, FRAME_HEADER_LEN, FrameError, IPC_VERSION, IpcCommand, IpcMessage, IpcReply,
     IpcResponse, IpcResult, decode_server_frame,
 };
-use msilt_core::{ControlChange, ControlTarget, FanChannel};
+use msilt_core::{ControlChange, ControlTarget, FanChannel, FanCurve, FanPoint};
 
 use crate::args::Action;
 
@@ -82,10 +82,10 @@ pub fn execute_with_frame(
             HELLO_TIMEOUT,
         )
         .map_err(handshake_error)?;
-    let revision = match &hello.result {
+    let snapshot = match &hello.result {
         IpcResult::Ok {
             reply: IpcReply::Hello { version, snapshot },
-        } if *version == IPC_VERSION => snapshot.revision,
+        } if *version == IPC_VERSION => snapshot,
         IpcResult::Ok {
             reply: IpcReply::Hello { .. },
         } => {
@@ -98,9 +98,51 @@ pub fn execute_with_frame(
         }
         IpcResult::Error { .. } => return Ok((hello, client.frame)),
     };
+    let revision = snapshot.revision;
     let (command, expected) = match action {
         Action::Status => (IpcCommand::GetSnapshot {}, ReplyKind::Snapshot),
         Action::ConfigGet => (IpcCommand::GetConfig {}, ReplyKind::Config),
+        Action::FanAuto => (
+            IpcCommand::ResetFanMode {
+                expected_revision: revision,
+            },
+            ReplyKind::Applied,
+        ),
+        Action::FanCurve { channel, duties } => {
+            let state = match channel {
+                FanChannel::Cpu => snapshot.hardware.cpu_fan.as_ref(),
+                FanChannel::Gpu => snapshot.hardware.gpu_fan.as_ref(),
+            }
+            .ok_or_else(|| ClientError {
+                phase: "fan curve unavailable",
+                cause: Failure::Protocol("daemon snapshot has no fan curve for that channel"),
+                outcome_unknown: false,
+            })?;
+            let mut points = state.curve.points;
+            points[0].duty_percent = 0;
+            for (slot, duty) in points[1..].iter_mut().zip(duties) {
+                slot.duty_percent = duty;
+            }
+            let curve = FanCurve { points };
+            if let Some(limits) = state.limits.as_ref() {
+                if curve.validate_with_limits(limits).is_err() {
+                    return Err(ClientError {
+                        phase: "fan curve rejected",
+                        cause: Failure::Protocol(
+                            "duties violate factory safety floor, monotonic order, or max duty",
+                        ),
+                        outcome_unknown: false,
+                    });
+                }
+            }
+            (
+                IpcCommand::Control {
+                    expected_revision: revision,
+                    change: ControlChange::SetFanCurve { channel, curve },
+                },
+                ReplyKind::Applied,
+            )
+        }
         Action::Control(change) => (
             IpcCommand::Control {
                 expected_revision: revision,
@@ -223,6 +265,10 @@ fn encode_cli_request(id: u64, command: &IpcCommand, out: &mut Vec<u8>) -> Resul
         } => write!(out, r#""op":"hello","version":{version},"client":"cli""#)?,
         IpcCommand::GetSnapshot {} => out.extend_from_slice(br#""op":"getSnapshot""#),
         IpcCommand::GetConfig {} => out.extend_from_slice(br#""op":"getConfig""#),
+        IpcCommand::ResetFanMode { expected_revision } => write!(
+            out,
+            r#""op":"resetFanMode","expectedRevision":{expected_revision}"#
+        )?,
         IpcCommand::ReleaseManualOverride {
             expected_revision,
             target,
@@ -248,6 +294,7 @@ fn encode_cli_request(id: u64, command: &IpcCommand, out: &mut Vec<u8>) -> Resul
                 ControlTarget::DisplayBrightness {} => "displayBrightness",
                 ControlTarget::ColorProfile {} => "colorProfile",
                 ControlTarget::KeyboardLighting {} => "keyboardLighting",
+                ControlTarget::GpuClockOffset {} => "gpuClockOffset",
                 _ => return Err(Failure::Protocol("unsupported CLI release target")),
             };
             if !kind.is_empty() {
@@ -268,6 +315,24 @@ fn encode_cli_request(id: u64, command: &IpcCommand, out: &mut Vec<u8>) -> Resul
                     out,
                     r#""kind":"setPerformanceMode","mode":"{}""#,
                     mode.protocol_name()
+                )?,
+                ControlChange::SetFanCurve { channel, curve } => {
+                    let ch = if *channel == FanChannel::Cpu { "cpu" } else { "gpu" };
+                    write!(out, r#""kind":"setFanCurve","channel":"{ch}","curve":{{"points":["#)?;
+                    for (index, FanPoint { temperature_c, duty_percent }) in curve.points.iter().enumerate() {
+                        if index > 0 {
+                            out.push(b',');
+                        }
+                        write!(
+                            out,
+                            r#"{{"temperatureC":{temperature_c},"dutyPercent":{duty_percent}}}"#
+                        )?;
+                    }
+                    out.extend_from_slice(b"]}");
+                }
+                ControlChange::SetGpuClockOffset { core_mhz, mem_mhz } => write!(
+                    out,
+                    r#""kind":"setGpuClockOffset","coreMhz":{core_mhz},"memMhz":{mem_mhz}"#
                 )?,
                 ControlChange::SetCoolerBoost { enabled } => {
                     write!(out, r#""kind":"setCoolerBoost","enabled":{enabled}"#)?
@@ -327,6 +392,23 @@ mod tests {
             ControlChange::SetDisplayRefreshRate { hz: 240 },
             ControlChange::SetColorProfile {
                 profile_id: "native-6500K".into(),
+            },
+            ControlChange::SetGpuClockOffset {
+                core_mhz: 150,
+                mem_mhz: 200,
+            },
+            ControlChange::SetFanCurve {
+                channel: FanChannel::Cpu,
+                curve: FanCurve {
+                    points: [
+                        FanPoint { temperature_c: 0, duty_percent: 0 },
+                        FanPoint { temperature_c: 48, duty_percent: 36 },
+                        FanPoint { temperature_c: 56, duty_percent: 42 },
+                        FanPoint { temperature_c: 62, duty_percent: 56 },
+                        FanPoint { temperature_c: 70, duty_percent: 88 },
+                        FanPoint { temperature_c: 78, duty_percent: 120 },
+                    ],
+                },
             },
         ] {
             let command = IpcCommand::Control {

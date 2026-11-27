@@ -168,6 +168,9 @@ export global AppState {
     in-out property <string> toast-title: "";
     in-out property <string> toast-text: "";
 
+    // ── floating help popover (0 = closed, 1 = fan curve, 2 = gpu offset) ──
+    in-out property <int> help-topic: 0;
+
     // ── capability gates ──
     in-out property <bool> cap-performance: false;
     in-out property <bool> cap-fan: false;

@@ -55,6 +55,7 @@ impl ClampReason {
 /// Local preview of one fan channel.
 #[derive(Debug, Clone)]
 pub struct CurveEditor {
+    channel: FanChannel,
     knots: [Knot; FAN_POINT_COUNT],
     committed: [u8; FAN_POINT_COUNT],
     max_duty_percent: u8,
@@ -68,7 +69,7 @@ impl CurveEditor {
     ///
     /// When the daemon has not published `limits` the editor is read-only: the
     /// curve is shown but no edit can be committed (no fabricated floor).
-    pub fn new(_channel: FanChannel, state: &FanState) -> Self {
+    pub fn new(channel: FanChannel, state: &FanState) -> Self {
         let mut knots = [Knot { temperature_c: 0, duty_percent: 0, floor_percent: 0 }; FAN_POINT_COUNT];
         for (index, point) in state.curve.points.iter().enumerate() {
             knots[index] = Knot {
@@ -87,6 +88,7 @@ impl CurveEditor {
                     knots[index].floor_percent = floor.duty_percent;
                 }
                 Self {
+                    channel,
                     knots,
                     committed,
                     max_duty_percent: limits.max_duty_percent,
@@ -96,6 +98,7 @@ impl CurveEditor {
                 }
             }
             None => Self {
+                channel,
                 knots,
                 committed,
                 max_duty_percent: 100,
@@ -108,8 +111,9 @@ impl CurveEditor {
 
     /// Placeholder used before the first snapshot arrives (and for a channel the
     /// device does not expose). Never presented as a real curve.
-    pub fn placeholder(_channel: FanChannel) -> Self {
+    pub fn placeholder(channel: FanChannel) -> Self {
         Self {
+            channel,
             knots: [Knot { temperature_c: 0, duty_percent: 0, floor_percent: 0 }; FAN_POINT_COUNT],
             committed: [0; FAN_POINT_COUNT],
             max_duty_percent: 100,
@@ -200,25 +204,33 @@ impl CurveEditor {
         self.hint = None;
     }
 
-    /// Named templates. `0` = factory floor, `1` = quiet, `2` = performance.
+    /// Named templates.
+    ///   * `0` = 静音底线（紧贴出厂安全下限，噪音最低）
+    ///   * `1` = 按需均衡（低温贴底静音，高负载陡升至 ~120% 压住 175W 满血释放）
+    ///   * `2` = 极限散热（全程积极排热，高温达 ~135% 应对长时间满载双烤）
     ///
     /// Templates are *local previews* only — they are never claimed to be
-    /// already applied. The result is monotonic by construction.
+    /// already applied. The result is strictly non-decreasing and safe by construction.
     pub fn preset(&mut self, kind: u8) {
         if !self.editable {
             self.hint = Some("当前风扇曲线暂不支持修改".into());
             return;
         }
         self.hint = None;
-        let offset: u8 = match kind {
-            0 => 0,
-            1 => 6,
-            _ => 12,
+        let offsets: [u8; FAN_POINT_COUNT] = match (kind, self.channel) {
+            (0, _) => [0, 0, 0, 0, 0, 0],
+            (1, FanChannel::Cpu) => [0, 0, 0, 4, 12, 36],
+            (1, FanChannel::Gpu) => [0, 0, 0, 6, 12, 32],
+            _ => [0, 4, 8, 18, 32, 50],
         };
         let mut next = [0u8; FAN_POINT_COUNT];
         for index in 0..FAN_POINT_COUNT {
             let floor = self.knots[index].floor_percent;
-            let target = if index == 0 { floor } else { floor.saturating_add(offset) };
+            let target = if index == 0 {
+                floor
+            } else {
+                floor.saturating_add(offsets[index])
+            };
             let previous = if index == 0 { 0 } else { next[index - 1] };
             next[index] = target.max(floor).max(previous).min(self.max_duty_percent);
         }
@@ -608,17 +620,27 @@ mod tests {
 
     #[test]
     fn presets_stay_valid_and_never_below_the_floor() {
+        let mut results = Vec::new();
         for kind in 0..3u8 {
-            let mut editor = CurveEditor::new(FanChannel::Cpu, &cpu_state());
+            let mut state = cpu_state();
+            state.limits.as_mut().unwrap().max_duty_percent = 150;
+            let mut editor = CurveEditor::new(FanChannel::Cpu, &state);
             editor.preset(kind);
             for (index, knot) in editor.knots().iter().enumerate() {
                 assert!(knot.duty_percent >= knot.floor_percent, "kind {kind} knot {index}");
                 assert!(knot.duty_percent <= editor.max_duty_percent());
             }
             editor.curve().validate_shape().unwrap();
-            let state = cpu_state();
             editor.curve().validate_with_limits(state.limits.as_ref().unwrap()).unwrap();
+            results.push(editor.knots().map(|k| k.duty_percent));
         }
+        // 静音底线 <= 按需均衡 <= 极限散热 at every single knot (never inverted)
+        for i in 0..FAN_POINT_COUNT {
+            assert!(results[0][i] <= results[1][i], "knot {i}: quiet > balanced");
+            assert!(results[1][i] <= results[2][i], "knot {i}: balanced > extreme");
+        }
+        // Exact MS-17S3 golden "按需均衡" CPU curve
+        assert_eq!(results[1], [0, 36, 42, 56, 88, 120]);
     }
 
     #[test]

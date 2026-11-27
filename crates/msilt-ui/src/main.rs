@@ -81,6 +81,7 @@ mod cmd {
     pub const TOAST_DISMISS: i32 = 62;
     pub const OPEN_SETTINGS: i32 = 63;
     pub const STATUS_PILL: i32 = 64;
+    pub const HELP_POPOVER: i32 = 65;
     pub const MONITOR_PAUSE: i32 = 70;
     pub const MONITOR_WINDOW: i32 = 71;
     pub const EXPORT: i32 = 80;
@@ -147,6 +148,8 @@ struct App {
     subscriptions: SubscriptionPlan,
     pending_control: Option<(u64, ControlChange)>,
     pending_fan_reset: Option<u64>,
+    pending_fan_curves: Vec<(FanChannel, msilt_core::FanCurve)>,
+    pending_fan_batch: bool,
     config: Option<(u64, msilt_core::AppConfig)>,
     config_pending: Option<u64>,
     theme_override: Option<bool>,
@@ -456,6 +459,8 @@ impl App {
         self.subscriptions = SubscriptionPlan::default();
         self.pending_control = None;
         self.pending_fan_reset = None;
+        self.pending_fan_curves.clear();
+        self.pending_fan_batch = false;
         self.config_pending = None;
         self.pending_tools_notice = None;
         self.pending_auto_toast = None;
@@ -560,6 +565,7 @@ impl App {
                 let target = a.clamp(0, 7);
                 if let Some(ui) = self.ui.upgrade() {
                     let state = ui.global::<AppState>();
+                    state.set_help_topic(0);
                     state.set_page(target);
                     if target == 0 {
                         view::apply_history_paths(&state, &self.history);
@@ -579,8 +585,20 @@ impl App {
                 }
                 return;
             }
+            cmd::HELP_POPOVER => {
+                if let Some(ui) = self.ui.upgrade() {
+                    let state = ui.global::<AppState>();
+                    let cur = state.get_help_topic();
+                    state.set_help_topic(if a <= 0 || cur == a { 0 } else { a });
+                }
+                return;
+            }
             cmd::CURVE_RESET => {
-                if let Some(editor) = self.curves.get_mut(a.clamp(0, 1) as usize) {
+                if a < 0 {
+                    for editor in &mut self.curves {
+                        editor.reset();
+                    }
+                } else if let Some(editor) = self.curves.get_mut(a.clamp(0, 1) as usize) {
                     editor.reset();
                 }
                 if let Some(ui) = self.ui.upgrade() {
@@ -591,8 +609,9 @@ impl App {
                 return;
             }
             cmd::CURVE_PRESET => {
-                if let Some(editor) = self.curves.get_mut(a.clamp(0, 1) as usize) {
-                    editor.preset(b.clamp(0, 2) as u8);
+                let preset_kind = a.clamp(0, 2) as u8;
+                for editor in &mut self.curves {
+                    editor.preset(preset_kind);
                 }
                 if let Some(ui) = self.ui.upgrade() {
                     let state = ui.global::<AppState>();
@@ -602,10 +621,36 @@ impl App {
                 return;
             }
             cmd::CURVE_APPLY => {
-                let channel = a.clamp(0, 1) as usize;
-                let curve = self.curves[channel].curve();
-                let fan_channel = if channel == 0 { FanChannel::Cpu } else { FanChannel::Gpu };
-                self.submit(ControlChange::SetFanCurve { channel: fan_channel, curve });
+                if a < 0 {
+                    let mut batch = Vec::new();
+                    let any_dirty = self.curves.iter().any(CurveEditor::is_dirty);
+                    for (idx, channel) in [FanChannel::Cpu, FanChannel::Gpu].into_iter().enumerate() {
+                        if self.curves[idx].is_editable() && (!any_dirty || self.curves[idx].is_dirty()) {
+                            batch.push((channel, self.curves[idx].curve()));
+                        }
+                    }
+                    if batch.is_empty() {
+                        return;
+                    }
+                    if self.demo {
+                        self.transient(4, "演示模式", "当前为演示模式，不会改动本机硬件。".into());
+                        return;
+                    }
+                    let (first_ch, first_curve) = batch.remove(0);
+                    self.pending_fan_batch = !batch.is_empty();
+                    self.pending_fan_curves = batch;
+                    self.submit(ControlChange::SetFanCurve {
+                        channel: first_ch,
+                        curve: first_curve,
+                    });
+                } else {
+                    let channel = a.clamp(0, 1) as usize;
+                    let curve = self.curves[channel].curve();
+                    let fan_channel = if channel == 0 { FanChannel::Cpu } else { FanChannel::Gpu };
+                    self.pending_fan_curves.clear();
+                    self.pending_fan_batch = false;
+                    self.submit(ControlChange::SetFanCurve { channel: fan_channel, curve });
+                }
                 return;
             }
             cmd::FAN_AUTO => {
@@ -1384,17 +1429,30 @@ impl App {
                     } else {
                         match completed_change {
                             Some(ControlChange::SetFanCurve { channel, .. }) => {
-                                let label = match channel {
-                                    FanChannel::Cpu => "CPU 风扇曲线已生效",
-                                    FanChannel::Gpu => "GPU 风扇曲线已生效",
-                                };
-                                let detail = self
-                                    .snapshot
-                                    .hardware
-                                    .performance_mode
-                                    .map(|mode| format!("已为「{}」模式启用并记忆自定义曲线。", view::mode_name(mode)))
-                                    .unwrap_or_default();
-                                self.transient(3, label, detail);
+                                if !self.pending_fan_curves.is_empty() {
+                                    let (next_ch, next_curve) = self.pending_fan_curves.remove(0);
+                                    self.submit(ControlChange::SetFanCurve {
+                                        channel: next_ch,
+                                        curve: next_curve,
+                                    });
+                                } else {
+                                    let was_batch = std::mem::take(&mut self.pending_fan_batch);
+                                    let label = if was_batch {
+                                        "自定义风扇曲线已生效"
+                                    } else {
+                                        match channel {
+                                            FanChannel::Cpu => "CPU 风扇曲线已生效",
+                                            FanChannel::Gpu => "GPU 风扇曲线已生效",
+                                        }
+                                    };
+                                    let detail = self
+                                        .snapshot
+                                        .hardware
+                                        .performance_mode
+                                        .map(|mode| format!("已为「{}」启用并记忆自定义曲线，切换模式时自动套用。", view::mode_name(mode)))
+                                        .unwrap_or_default();
+                                    self.transient(3, label, detail);
+                                }
                             }
                             Some(ControlChange::SetPerformanceMode { mode }) => {
                                 if self.snapshot.hardware.fan_mode == Some(msilt_core::FanMode::Advanced)
@@ -1497,6 +1555,8 @@ impl App {
             },
             IpcResult::Error { error } => {
                 self.oem_busy = false;
+                self.pending_fan_curves.clear();
+                self.pending_fan_batch = false;
                 self.pending_tools_notice = None;
                 self.pending_auto_toast = None;
                 self.pending_release_toast = false;
@@ -1766,6 +1826,8 @@ fn run(options: Options) -> ExitCode {
         subscriptions: SubscriptionPlan::default(),
         pending_control: None,
         pending_fan_reset: None,
+        pending_fan_curves: Vec::new(),
+        pending_fan_batch: false,
         config: demo.then_some((0, msilt_core::AppConfig::default())),
         config_pending: None,
         theme_override: options.dark,
