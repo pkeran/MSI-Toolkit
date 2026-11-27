@@ -1,20 +1,24 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{FanChannel, FanCurve, PerformanceMode};
+use crate::{FanChannel, FanCurve, PerformanceMode, model::str_enum_serde};
 
 pub const CONFIG_SCHEMA_VERSION: u16 = 1;
 pub const FAN_PROFILES_SCHEMA_VERSION: u16 = 1;
 pub const MAX_CONFIG_BYTES: usize = 16 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     #[default]
     System,
     Light,
     Dark,
 }
+str_enum_serde!(Theme, "theme",
+    System => "system",
+    Light => "light",
+    Dark => "dark",
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
@@ -61,6 +65,10 @@ impl Default for UpdateConfig {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppConfig {
@@ -75,6 +83,8 @@ pub struct AppConfig {
     pub updates: UpdateConfig,
     #[serde(default)]
     pub onboarding_completed: bool,
+    #[serde(default = "default_true")]
+    pub restore_gpu_offset_on_boot: bool,
 }
 
 impl Default for AppConfig {
@@ -86,6 +96,7 @@ impl Default for AppConfig {
             automation: AutomationConfig::default(),
             updates: UpdateConfig::default(),
             onboarding_completed: false,
+            restore_gpu_offset_on_boot: true,
         }
     }
 }
@@ -158,6 +169,14 @@ pub struct FanProfileStore {
     pub balanced: ModeFanProfile,
     #[serde(default)]
     pub extreme_performance: ModeFanProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_mode: Option<PerformanceMode>,
+    #[serde(default)]
+    pub gpu_oc_core_mhz: i16,
+    #[serde(default)]
+    pub gpu_oc_mem_mhz: i16,
+    #[serde(default)]
+    pub gpu_oc_pending: bool,
 }
 
 impl Default for FanProfileStore {
@@ -167,6 +186,10 @@ impl Default for FanProfileStore {
             super_battery: ModeFanProfile::default(),
             balanced: ModeFanProfile::default(),
             extreme_performance: ModeFanProfile::default(),
+            last_mode: None,
+            gpu_oc_core_mhz: 0,
+            gpu_oc_mem_mhz: 0,
+            gpu_oc_pending: false,
         }
     }
 }
@@ -193,6 +216,12 @@ impl FanProfileStore {
         self.super_battery.validate()?;
         self.balanced.validate()?;
         self.extreme_performance.validate()?;
+        if !(0..=200).contains(&self.gpu_oc_core_mhz) {
+            return Err(ConfigError::InvalidField("gpuOcCoreMhz"));
+        }
+        if !(0..=200).contains(&self.gpu_oc_mem_mhz) {
+            return Err(ConfigError::InvalidField("gpuOcMemMhz"));
+        }
         Ok(())
     }
 
@@ -364,5 +393,13 @@ mod tests {
             FanProfileStore::parse_json(br#"{"schemaVersion":2}"#),
             Err(ConfigError::UnsupportedSchema(2)),
         ));
+        store.last_mode = Some(PerformanceMode::ExtremePerformance);
+        store.gpu_oc_core_mhz = 150;
+        store.gpu_oc_mem_mhz = 200;
+        store.gpu_oc_pending = true;
+        let encoded = store.encode_json().unwrap();
+        assert_eq!(FanProfileStore::parse_json(&encoded).unwrap(), store);
+        assert!(FanProfileStore::parse_json(br#"{"schemaVersion":1,"gpuOcCoreMhz":201}"#).is_err());
+        assert!(FanProfileStore::parse_json(br#"{"schemaVersion":1,"gpuOcMemMhz":-5}"#).is_err());
     }
 }

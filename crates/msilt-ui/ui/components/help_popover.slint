@@ -189,8 +189,8 @@ export component HelpPopover inherits Rectangle {
                     }
                     HelpBullet {
                         dot-color: Theme.warn;
-                        heading: "供电约束与重启自动归零";
-                        detail: "仅接通交流电源时可应用非零偏移；电池模式下仍支持一键重置 0 MHz。系统重启后驱动会自动恢复默认 0 MHz，避免不稳定频率影响下次开机。";
+                        heading: "开机自动恢复与 15 秒防死循环保护";
+                        detail: "开启「开机恢复」后，插电重启将由后台服务自动恢复上次性能模式、自定义风扇曲线与 GPU 偏移；若应用偏移后 15 秒内发生异常重启，下次开机会自动清零偏移，杜绝死循环。关闭开关则重启归零。";
                     }
                 }
             }

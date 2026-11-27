@@ -63,6 +63,7 @@ mod cmd {
     pub const GPU_OC_MEM: i32 = 36;
     pub const GPU_OC_APPLY: i32 = 37;
     pub const GPU_OC_RESET: i32 = 38;
+    pub const GPU_OC_RESTORE_BOOT: i32 = 39;
     pub const ZONE_APPLY: i32 = 41;
     pub const ZONE_PRESET: i32 = 42;
     pub const ZONE_SELECT: i32 = 43;
@@ -167,6 +168,8 @@ struct App {
     update_status_text: String,
     update_release: Option<updater::ReleaseInfo>,
     startup_update_checked: bool,
+    auto_start_tried: bool,
+    connecting: bool,
     headless: bool,
 }
 
@@ -262,7 +265,7 @@ impl App {
             3
         } else if self.connected {
             1
-        } else if self.ipc.is_some() {
+        } else if self.ipc.is_some() || self.connecting {
             0
         } else {
             2
@@ -270,7 +273,7 @@ impl App {
         let (conn_level, conn_text) = if self.demo {
             (0, "演示模式")
         } else if !self.connected {
-            if self.ipc.is_some() {
+            if self.ipc.is_some() || self.connecting {
                 (4, "正在连接…")
             } else {
                 (2, "服务未运行")
@@ -308,6 +311,7 @@ impl App {
             state.set_automation_enabled(config.automation.enabled);
             state.set_osd_enabled(config.osd.enabled);
             state.set_osd_duration(i32::from(config.osd.duration_ms));
+            state.set_gpu_oc_restore_boot(config.restore_gpu_offset_on_boot);
             state.set_update_auto_check(config.updates.auto_check);
             state.set_override_policy(match config.automation.manual_override {
                 msilt_core::ManualOverride::UntilReleased => "手动恢复前保持".into(),
@@ -334,7 +338,11 @@ impl App {
 
         // Persistent banner ONLY for global blocking abnormal states (updates use the left-nav badge).
         let installed = !self.demo && self.app_installed;
-        let notice = view::notice(&self.snapshot, self.connected, self.demo, installed);
+        let notice = if self.connecting && !self.connected {
+            None
+        } else {
+            view::notice(&self.snapshot, self.connected, self.demo, installed)
+        };
         match notice {
             Some(notice) => {
                 state.set_banner_visible(true);
@@ -456,6 +464,7 @@ impl App {
 
     fn on_disconnect(&mut self, reason: String) {
         self.connected = false;
+        self.connecting = false;
         self.subscriptions = SubscriptionPlan::default();
         self.pending_control = None;
         self.pending_fan_reset = None;
@@ -717,6 +726,17 @@ impl App {
                 self.gpu_oc_dirty = false;
                 self.submit(ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 });
                 return;
+            }
+            cmd::GPU_OC_RESTORE_BOOT => {
+                let enabled = a != 0;
+                if self.demo {
+                    if let Some((_, config)) = self.config.as_mut() {
+                        config.restore_gpu_offset_on_boot = enabled;
+                    }
+                } else {
+                    self.update_config(|config| config.restore_gpu_offset_on_boot = enabled);
+                    return;
+                }
             }
             cmd::ZONE_PRESET => {
                 self.zones.apply_preset(a.clamp(0, 3) as usize);
@@ -1386,6 +1406,7 @@ impl App {
                     self.sync_gpu_oc_from_snapshot(true);
                     self.history = History::default();
                     self.connected = true;
+                    self.connecting = false;
                     self.sync_subscriptions();
                     if let Some(ipc) = self.ipc.as_ref() {
                         let _ = ipc.send(IpcCommand::GetConfig {});
@@ -1476,10 +1497,12 @@ impl App {
                                 if core_mhz == 0 && mem_mhz == 0 {
                                     self.transient(3, "已重置显卡频率偏移", "核心与显存偏移已恢复默认 0 MHz。".into());
                                 } else {
+                                    let boot = self.config.map_or(true, |(_, c)| c.restore_gpu_offset_on_boot);
+                                    let suffix = if boot { "已记忆，开机插电后自动恢复" } else { "仅本次开机生效" };
                                     self.transient(
                                         3,
                                         "显卡频率偏移已生效",
-                                        format!("核心 +{core_mhz} MHz · 显存 +{mem_mhz} MHz（重启后自动还原）。"),
+                                        format!("核心 +{core_mhz} MHz · 显存 +{mem_mhz} MHz（{suffix}）。"),
                                     );
                                 }
                             }
@@ -1678,11 +1701,13 @@ fn process_inbox() {
 fn schedule_connect(ui: slint::Weak<AppWindow>, attempt: u32) {
     let delay = match attempt {
         0 => 0,
-        1 => 200,
+        1 => 250,
         2 => 400,
-        3 => 800,
-        4 => 1_600,
-        _ => 5_000,
+        3 => 600,
+        4 => 900,
+        5 => 1_200,
+        6 => 1_600,
+        _ => 2_500,
     };
     let weak = ui.clone();
     Timer::single_shot(Duration::from_millis(delay), move || {
@@ -1709,11 +1734,28 @@ fn schedule_connect(ui: slint::Weak<AppWindow>, attempt: u32) {
                 });
             }
             Err(_) => {
+                let should_autostart = APP.with(|cell| {
+                    let mut guard = cell.borrow_mut();
+                    guard.as_mut().is_some_and(|app| {
+                        if !app.demo && app.app_installed && !app.auto_start_tried {
+                            app.auto_start_tried = true;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                });
+                if should_autostart {
+                    let _ = updater::try_start_daemon_silently();
+                }
                 with_app(|app| {
                     app.connected = false;
+                    if attempt >= 5 {
+                        app.connecting = false;
+                    }
                     app.push_all();
                 });
-                if attempt < 6 {
+                if attempt < 10 {
                     schedule_connect(ui, attempt + 1);
                 }
             }
@@ -1845,6 +1887,8 @@ fn run(options: Options) -> ExitCode {
         update_status_text: format!("当前 v{} · GitHub Releases", env!("CARGO_PKG_VERSION")),
         update_release: None,
         startup_update_checked: false,
+        auto_start_tried: false,
+        connecting: !demo,
         headless: headless.is_some(),
     };
     put_app(app);

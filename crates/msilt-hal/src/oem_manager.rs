@@ -277,6 +277,7 @@ fn item_status(object: MsiObject, state: Option<&ObjectState>) -> OemItemStatus 
         Scm => ("Micro Star SCM", OemItemKind::Service),
         MysticLight => ("Mystic Light 灯效服务", OemItemKind::Service),
         LightKeeper => ("LightKeeper 灯效守护", OemItemKind::Service),
+        LedKeeperTask => ("LEDKeeper2 计划任务", OemItemKind::ScheduledTask),
         TrueColorService => ("MSI True Color 校色服务", OemItemKind::Service),
         BrokerTask => ("OmApSvcBroker 计划任务", OemItemKind::ScheduledTask),
         UpdaterTask => ("OneDC 更新任务", OemItemKind::ScheduledTask),
@@ -853,7 +854,7 @@ mod tests {
             item_status(MsiObject::StoreStartup, Some(&ObjectState::Missing)).startup_label,
             "未安装"
         );
-        assert_eq!(MsiObject::ALL.len(), 11);
+        assert_eq!(MsiObject::ALL.len(), 12);
     }
 
     #[test]

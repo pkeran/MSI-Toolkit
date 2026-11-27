@@ -53,23 +53,23 @@ impl BitOrAssign for CapabilityFlags {
 
 macro_rules! str_enum_serde {
     ($ty:ident, $name:literal, $( $variant:ident => $wire:literal ),+ $(,)?) => {
-        impl Serialize for $ty {
-            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $ty {
+            fn serialize<S: ::serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 s.serialize_str(match self {
                     $( Self::$variant => $wire, )+
                 })
             }
         }
 
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        impl<'de> ::serde::Deserialize<'de> for $ty {
+            fn deserialize<D: ::serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 struct V;
-                impl serde::de::Visitor<'_> for V {
+                impl ::serde::de::Visitor<'_> for V {
                     type Value = $ty;
-                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                         f.write_str($name)
                     }
-                    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    fn visit_str<E: ::serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
                         match v {
                             $( $wire => Ok($ty::$variant), )+
                             _ => Err(E::custom($name)),
@@ -81,6 +81,7 @@ macro_rules! str_enum_serde {
         }
     };
 }
+pub(crate) use str_enum_serde;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaemonStatus {
@@ -704,14 +705,19 @@ pub enum ControlError {
     FanCurve(#[from] FanCurveError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsdKind {
     PerformanceMode,
     CoolerBoost,
     DisplayRefreshRate,
     AutomationApplied,
 }
+str_enum_serde!(OsdKind, "osd kind",
+    PerformanceMode => "performanceMode",
+    CoolerBoost => "coolerBoost",
+    DisplayRefreshRate => "displayRefreshRate",
+    AutomationApplied => "automationApplied",
+);
 
 #[cfg(test)]
 mod tests {

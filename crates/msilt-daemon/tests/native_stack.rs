@@ -433,7 +433,7 @@ fn unpinned_custom_endpoint_does_not_grant_ui_telemetry() {
 }
 
 #[test]
-fn native_readonly_system_tools_can_inspect_all_eleven_objects() {
+fn native_readonly_system_tools_can_inspect_all_managed_objects() {
     let name = format!("MSIToolkit-tools-e2e-{}", std::process::id());
     let mut daemon = DaemonProcess::start(&name, true, true);
     let mut client = Client::connect(&name, &mut daemon);
@@ -444,7 +444,7 @@ fn native_readonly_system_tools_can_inspect_all_eleven_objects() {
         panic!("missing system tools reply");
     };
     assert!(!startup.detail.is_empty());
-    assert_eq!(oem.items.len(), 11);
+    assert_eq!(oem.items.len(), 12);
     assert_eq!(oem.packages.len(), 3);
     assert_eq!(oem.elevated, startup.elevated);
 }

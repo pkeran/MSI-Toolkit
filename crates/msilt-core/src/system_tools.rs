@@ -1,12 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+use crate::model::str_enum_serde;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupMode {
     Disabled,
     ScheduledTask,
     UserRunKey,
 }
+str_enum_serde!(StartupMode, "startup mode",
+    Disabled => "disabled",
+    ScheduledTask => "scheduledTask",
+    UserRunKey => "userRunKey",
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -19,31 +25,45 @@ pub struct StartupStatus {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OemScope {
     All,
     Core,
     Lighting,
     TrueColor,
 }
+str_enum_serde!(OemScope, "oem scope",
+    All => "all",
+    Core => "core",
+    Lighting => "lighting",
+    TrueColor => "trueColor",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OemItemKind {
     Service,
     ScheduledTask,
     RegistryRun,
     StoreStartup,
 }
+str_enum_serde!(OemItemKind, "oem item kind",
+    Service => "service",
+    ScheduledTask => "scheduledTask",
+    RegistryRun => "registryRun",
+    StoreStartup => "storeStartup",
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OemPackageId {
     MsiCenterUwp,
     MsiCenterSdk,
     MsiTrueColor,
 }
+str_enum_serde!(OemPackageId, "oem package id",
+    MsiCenterUwp => "msiCenterUwp",
+    MsiCenterSdk => "msiCenterSdk",
+    MsiTrueColor => "msiTrueColor",
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,14 +120,19 @@ pub enum OemAction {
     UninstallPackage { package: OemPackageId },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationPreset {
     BatterySilent60Hz,
     AcBalanced240Hz,
     LowBatterySuperSave,
     LockScreenDarkKeyboard,
 }
+str_enum_serde!(AutomationPreset, "automation preset",
+    BatterySilent60Hz => "batterySilent60Hz",
+    AcBalanced240Hz => "acBalanced240Hz",
+    LowBatterySuperSave => "lowBatterySuperSave",
+    LockScreenDarkKeyboard => "lockScreenDarkKeyboard",
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

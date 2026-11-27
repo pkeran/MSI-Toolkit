@@ -271,25 +271,37 @@ impl Security {
                 linked
             }
         } else {
-            let shell = unsafe { GetShellWindow() };
-            let mut pid = 0;
-            if shell.is_invalid() || unsafe { GetWindowThreadProcessId(shell, Some(&mut pid)) } == 0
-            {
-                return Err(denied("interactive Windows shell is unavailable"));
+            // At Windows logon the scheduled task can fire before explorer.exe creates
+            // the shell window; wait up to 30 s so startup succeeds on the first try.
+            let mut shell_token = None;
+            for _ in 0..120 {
+                let shell = unsafe { GetShellWindow() };
+                let mut pid = 0;
+                if !shell.is_invalid()
+                    && unsafe { GetWindowThreadProcessId(shell, Some(&mut pid)) } != 0
+                {
+                    if let Ok(process) =
+                        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+                            .map(|h| unsafe { own(h) })
+                    {
+                        if let Ok(tok) = process_token(raw(&process), TOKEN_QUERY | TOKEN_DUPLICATE)
+                        {
+                            if let Ok(desktop) = Identity::read(raw(&tok)) {
+                                if client.same_user_session(&desktop)
+                                    && client.logon == desktop.logon
+                                    && desktop.medium()
+                                {
+                                    shell_token = Some(tok);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            let process = unsafe {
-                own(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(os_error)?)
-            };
-            let token = process_token(raw(&process), TOKEN_QUERY | TOKEN_DUPLICATE)?;
-            let desktop = Identity::read(raw(&token))?;
-            if !client.same_user_session(&desktop)
-                || client.logon != desktop.logon
-                || !desktop.medium()
-            {
-                return Err(denied(
-                    "shell token does not match the linked desktop login",
-                ));
-            }
+            let token = shell_token
+                .ok_or_else(|| denied("interactive Windows shell is unavailable"))?;
             let mut primary = HANDLE::default();
             unsafe {
                 DuplicateTokenEx(

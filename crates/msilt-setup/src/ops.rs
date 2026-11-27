@@ -966,6 +966,7 @@ fn register_daemon_task(daemon_exe: &Path, enabled: bool) -> Result<(), String> 
             logon
                 .SetUserId(&user_bstr)
                 .map_err(|e| format!("绑定登录触发器用户失败：{e}"))?;
+            let _ = logon.SetDelay(&BSTR::from("PT2S"));
 
             let exec: IExecAction = def
                 .Actions()
@@ -996,6 +997,8 @@ fn register_daemon_task(daemon_exe: &Path, enabled: bool) -> Result<(), String> 
             settings
                 .SetStopIfGoingOnBatteries(VARIANT_FALSE)
                 .map_err(|e| format!("允许电池模式保持运行失败：{e}"))?;
+            let _ = settings.SetRestartInterval(&BSTR::from("PT1M"));
+            let _ = settings.SetRestartCount(3);
 
             folder
                 .RegisterTaskDefinition(

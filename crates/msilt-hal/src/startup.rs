@@ -543,6 +543,7 @@ fn set_task(enabled: bool, path: &Path) -> Result<(), Diagnostic> {
                 let logon: ILogonTrigger =
                     definition.Triggers()?.Create(TASK_TRIGGER_LOGON)?.cast()?;
                 logon.SetUserId(&user)?;
+                logon.SetDelay(&BSTR::from("PT2S"))?;
                 let exec: IExecAction = definition.Actions()?.Create(TASK_ACTION_EXEC)?.cast()?;
                 exec.SetPath(&BSTR::from(path.to_string_lossy().as_ref()))?;
                 exec.SetArguments(&BSTR::from(TASK_ARGS))?;
@@ -557,6 +558,8 @@ fn set_task(enabled: bool, path: &Path) -> Result<(), Diagnostic> {
                 settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
                 settings.SetDisallowStartIfOnBatteries(VARIANT_FALSE)?;
                 settings.SetStopIfGoingOnBatteries(VARIANT_FALSE)?;
+                settings.SetRestartInterval(&BSTR::from("PT1M"))?;
+                settings.SetRestartCount(3)?;
                 folder.RegisterTaskDefinition(
                     &BSTR::from(TASK_NAME),
                     &definition,

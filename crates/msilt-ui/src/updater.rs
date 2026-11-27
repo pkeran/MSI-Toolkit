@@ -571,11 +571,27 @@ fn open_executable(path: &Path, params: &str) -> Result<(), String> {
     if result > 32 { Ok(()) } else { Err(format!("Windows 无法启动安装程序（{result}）")) }
 }
 
+/// Triggers the pre-authorized `\MSI-Toolkit\Daemon` scheduled task silently
+/// (zero UAC prompt, because the task DACL grants `GRGX` to the current user).
+pub fn try_start_daemon_silently() -> bool {
+    let schtasks = std::env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join(r"System32\schtasks.exe"))
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\schtasks.exe"));
+    Command::new(schtasks)
+        .args(["/Run", "/TN", r"\MSI-Toolkit\Daemon"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 pub fn start_installed_daemon() -> Result<(), String> {
     let dir = installed_dir();
     let daemon = dir.join("msilt-daemon.exe");
     if !daemon.is_file() {
         return Err("尚未完成安装，请先运行 MSI-Toolkit-Setup.exe 安装。".into());
+    }
+    if try_start_daemon_silently() {
+        return Ok(());
     }
     let verb = wide_z("runas");
     let file = wide(&daemon);

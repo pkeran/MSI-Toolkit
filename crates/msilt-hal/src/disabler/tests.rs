@@ -258,12 +258,16 @@ fn stop_now_preserves_start_types_and_other_tiers() {
 #[test]
 fn complete_inventory_is_read_only_and_allowlist_is_exact() {
     let mut disabler = SoftwareDisabler::with_ops(Mock::default());
-    assert_eq!(disabler.inspect_msi_software().unwrap().len(), 11);
+    assert_eq!(disabler.inspect_msi_software().unwrap().len(), 12);
     assert!(disabler.ops.events.is_empty());
     assert_eq!(MsiObject::from_name("msi_center_service").unwrap(), Center);
     assert_eq!(
         MsiObject::from_name("MSI TRUE COLOR").unwrap(),
         TrueColorRun
+    );
+    assert_eq!(
+        MsiObject::from_name(r"\MSI Task Host - LEDKeeper2_Host").unwrap(),
+        LedKeeperTask
     );
     for name in [
         "wmiacpi",
@@ -310,7 +314,7 @@ fn durable_backup_precedes_consumer_stop_then_quiet_before_brokers() {
         assert!(!events[..quiet].contains(&Event::Change(stop(*object))));
         assert!(events[quiet..].contains(&Event::Change(stop(*object))));
     }
-    assert_eq!(report.changed.len(), 11);
+    assert_eq!(report.changed.len(), 12);
     for row in report.observed {
         assert_eq!(
             row.state,
@@ -342,7 +346,7 @@ fn presets_modify_only_selected_and_present_objects() {
     let mut disabler = SoftwareDisabler::with_ops(mock);
     let plan = DisablePlan::new([DisableTier::Lighting]).unwrap();
     let report = disabler.disable(&plan, path()).unwrap();
-    assert_eq!(report.changed, [MysticLight]);
+    assert_eq!(report.changed, [LedKeeperTask, MysticLight]);
     assert_eq!(
         report
             .observed
@@ -360,7 +364,7 @@ fn presets_modify_only_selected_and_present_objects() {
             .any(|e| matches!(e, Event::Wait(_)))
     );
     for (&object, state) in &disabler.ops.states {
-        if object != MysticLight {
+        if object != MysticLight && object != LedKeeperTask {
             assert_eq!(state, &original[&object]);
         }
     }
@@ -381,6 +385,13 @@ fn repeated_disable_and_restore_preserve_original_configuration() {
             active: false,
         }),
     );
+    expected.insert(
+        LedKeeperTask,
+        ObjectState::Task(TaskState {
+            enabled: true,
+            active: false,
+        }),
+    );
     disabler.disable(&all(), path()).unwrap();
     let bytes = disabler.ops.backups[path()].clone();
     disabler.ops.events.clear();
@@ -389,7 +400,7 @@ fn repeated_disable_and_restore_preserve_original_configuration() {
     assert_eq!(disabler.ops.backups[path()], bytes);
     assert_eq!(
         disabler.restore_from_backup(path()).unwrap().changed.len(),
-        11
+        12
     );
     assert_eq!(disabler.ops.states, expected);
     assert_eq!(
@@ -584,4 +595,34 @@ fn different_plan_cannot_replace_backup_and_policy_can_refuse_disable() {
         if diagnostic.kind == DiagnosticKind::ConflictDetected)
     );
     assert!(disabler.ops.events.is_empty());
+}
+
+#[test]
+fn legacy_eleven_item_backup_upgrades_and_restores_cleanly() {
+    let mut disabler = SoftwareDisabler::with_ops(Mock::default());
+    disabler.disable(&all(), path()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&disabler.ops.backups[path()]).unwrap();
+    legacy["inventory"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|row| row["object"] != r"\MSI Task Host - LEDKeeper2_Host");
+    assert_eq!(legacy["inventory"].as_array().unwrap().len(), 11);
+    disabler
+        .ops
+        .backups
+        .insert(path().to_owned(), serde_json::to_vec(&legacy).unwrap());
+    // Re-running disable against a v1 11-item backup succeeds and disables newly tracked LedKeeperTask.
+    disabler.ops.states.insert(
+        LedKeeperTask,
+        ObjectState::Task(TaskState {
+            enabled: true,
+            active: true,
+        }),
+    );
+    let report = disabler.disable(&all(), path()).unwrap();
+    assert_eq!(report.changed, [LedKeeperTask]);
+    // Restoring from the v1 11-item backup succeeds cleanly without failing on missing LedKeeperTask.
+    let restored = disabler.restore_from_backup(path()).unwrap();
+    assert_eq!(restored.changed.len(), 11);
 }

@@ -231,8 +231,30 @@ component GpuOffsetSection inherits VerticalLayout {
         }
         Rectangle { horizontal-stretch: 1; background: transparent; }
 
+        Text {
+            text: "开机恢复";
+            font-size: Theme.font-caption;
+            color: Theme.text-2;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
         VerticalLayout {
             alignment: center;
+            horizontal-stretch: 0;
+            FluentToggle {
+                checked: AppState.gpu-oc-restore-boot;
+                enabled: AppState.interactive && (AppState.config-known || AppState.demo);
+                toggled => { AppState.command(39, AppState.gpu-oc-restore-boot ? 0 : 1, 0); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Rectangle { width: 1px; height: 14px; background: Theme.divider; }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
             FluentButton {
                 text: "重置 0 MHz";
                 compact: true;
@@ -244,6 +266,7 @@ component GpuOffsetSection inherits VerticalLayout {
         }
         VerticalLayout {
             alignment: center;
+            horizontal-stretch: 0;
             FluentButton {
                 text: "应用偏移";
                 compact: true;

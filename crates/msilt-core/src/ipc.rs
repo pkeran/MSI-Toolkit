@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::{
     AppConfig, AutomationPreset, AutomationRuleView, ControlChange, ControlError, ControlTarget,
     HalError, OemAction, OemInventory, OsdKind, StartupStatus, SystemSnapshot, TelemetrySample,
-    TransactionFailure, WriteGuardError,
+    TransactionFailure, WriteGuardError, model::str_enum_serde,
 };
 
 pub const PIPE_NAME: &str = r"\\.\pipe\MSIToolkit-IPC-v1";
@@ -16,12 +16,15 @@ pub const MAX_FRAME_PAYLOAD: usize = 64 * 1024;
 pub const DEFAULT_QUEUE_TTL_MS: u16 = 5_000;
 pub const MAX_QUEUE_TTL_MS: u16 = 10_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientKind {
     Ui,
     Cli,
 }
+str_enum_serde!(ClientKind, "client kind",
+    Ui => "ui",
+    Cli => "cli",
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
@@ -125,8 +128,7 @@ pub struct IpcError {
     pub code: ErrorCode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     InvalidRequest,
     IncompatibleVersion,
@@ -149,6 +151,28 @@ pub enum ErrorCode {
     RecoveryRequired,
     Internal,
 }
+str_enum_serde!(ErrorCode, "error code",
+    InvalidRequest => "invalidRequest",
+    IncompatibleVersion => "incompatibleVersion",
+    AccessDenied => "accessDenied",
+    NotReady => "notReady",
+    Unsupported => "unsupported",
+    ReadOnlyFirmware => "readOnlyFirmware",
+    DeniedWrite => "deniedWrite",
+    WriteNotAllowed => "writeNotAllowed",
+    ValidationFailed => "validationFailed",
+    RevisionConflict => "revisionConflict",
+    RequestExpired => "requestExpired",
+    ConflictDetected => "conflictDetected",
+    Busy => "busy",
+    TimedOut => "timedOut",
+    BackendUnavailable => "backendUnavailable",
+    WriteFailed => "writeFailed",
+    VerificationFailed => "verificationFailed",
+    RollbackFailed => "rollbackFailed",
+    RecoveryRequired => "recoveryRequired",
+    Internal => "internal",
+);
 
 impl From<ControlError> for ErrorCode {
     fn from(error: ControlError) -> Self {

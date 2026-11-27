@@ -65,6 +65,8 @@ pub enum MsiObject {
     BrokerTask,
     #[serde(rename = r"\OneDC_Updater")]
     UpdaterTask,
+    #[serde(rename = r"\MSI Task Host - LEDKeeper2_Host")]
+    LedKeeperTask,
     #[serde(rename = "MsiTrueColor")]
     TrueColorRun,
     #[serde(rename = "MSI_Center_UWP")]
@@ -76,6 +78,7 @@ use MsiObject::*;
 const CONSUMERS: &[MsiObject] = &[
     UpdaterTask,
     TrueColorService,
+    LedKeeperTask,
     LightKeeper,
     MysticLight,
     Scm,
@@ -91,6 +94,7 @@ const RESTORE_ORDER: &[MsiObject] = &[
     Center,
     MysticLight,
     LightKeeper,
+    LedKeeperTask,
     TrueColorService,
     BrokerTask,
     UpdaterTask,
@@ -109,6 +113,7 @@ impl MsiObject {
             Scm => "Micro Star SCM",
             MysticLight => "Mystic_Light_Service",
             LightKeeper => "LightKeeperService",
+            LedKeeperTask => r"\MSI Task Host - LEDKeeper2_Host",
             TrueColorService => "MSITrueColorService",
             BrokerTask => r"\OmApSvcBroker",
             UpdaterTask => r"\OneDC_Updater",
@@ -120,7 +125,7 @@ impl MsiObject {
     pub const fn tier(self) -> DisableTier {
         match self {
             Center | Foundation | Sendev | Scm | BrokerTask | UpdaterTask => DisableTier::Core,
-            MysticLight | LightKeeper => DisableTier::Lighting,
+            MysticLight | LightKeeper | LedKeeperTask => DisableTier::Lighting,
             TrueColorService | TrueColorRun | StoreStartup => DisableTier::TrueColor,
         }
     }
@@ -147,7 +152,7 @@ impl MsiObject {
     }
 
     const fn is_task(self) -> bool {
-        matches!(self, BrokerTask | UpdaterTask)
+        matches!(self, BrokerTask | UpdaterTask | LedKeeperTask)
     }
 }
 
@@ -319,19 +324,19 @@ impl MsiBackupSnapshot {
                 ));
             }
         }
-        if seen.len() != RESTORE_ORDER.len() {
+        if seen.len() != RESTORE_ORDER.len()
+            && !(seen.len() + 1 == RESTORE_ORDER.len() && !seen.contains(&LedKeeperTask))
+        {
             return Err(DisablerError::InvalidBackup("incomplete inventory"));
         }
         Ok(())
     }
 
-    fn original(&self, object: MsiObject) -> &ObjectState {
-        &self
-            .inventory
+    fn original(&self, object: MsiObject) -> Option<&ObjectState> {
+        self.inventory
             .iter()
             .find(|row| row.object == object)
-            .expect("validated inventory")
-            .state
+            .map(|row| &row.state)
     }
 }
 
@@ -457,7 +462,7 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
         let _lock = self.ops.lock_update()?;
         let binding = self.ops.backup_binding()?;
         let inventory = self.inspect_msi_software()?;
-        let (snapshot, new) = match self.ops.read_backup(path)? {
+        let (mut snapshot, new) = match self.ops.read_backup(path)? {
             Some(bytes) => {
                 let snapshot = MsiBackupSnapshot::from_json(&bytes)?;
                 check_binding(&snapshot, &binding)?;
@@ -477,9 +482,15 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
                 true,
             ),
         };
+        // Older backups created before LedKeeperTask was added inherit its current state in-memory.
+        for row in &inventory {
+            if snapshot.original(row.object).is_none() {
+                snapshot.inventory.push(row.clone());
+            }
+        }
         let mut changes = Vec::new();
         for row in inventory.iter().filter(|row| plan.contains(row.object)) {
-            let original = snapshot.original(row.object);
+            let original = snapshot.original(row.object).expect("inventory populated");
             let desired = disabled_state(row.object, original)?;
             check_transition(row.object, &row.state, original, &desired)?;
             if !settled(&row.state, &desired, transition) {
@@ -503,7 +514,7 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
                 }
                 for &object in objects.iter().filter(|&&object| plan.contains(object)) {
                     let operation = (|| {
-                        let original = snapshot.original(object);
+                        let original = snapshot.original(object).expect("inventory populated");
                         let desired = disabled_state(object, original)?;
                         let current = checked_read(&mut self.ops, object)?;
                         check_transition(object, &current, original, &desired)?;
@@ -530,8 +541,8 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
                 .iter()
                 .filter(|&&object| plan.contains(object))
             {
-                let desired =
-                    disabled_state(object, snapshot.original(object)).map_err(|e| (object, e))?;
+                let original = snapshot.original(object).expect("inventory populated");
+                let desired = disabled_state(object, original).map_err(|e| (object, e))?;
                 let state =
                     verify(&mut self.ops, object, &desired, transition).map_err(|e| (object, e))?;
                 observed.push(ObservedObject { object, state });
@@ -543,7 +554,8 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
             for row in touched.iter().rev() {
                 let outcome = (|| {
                     let current = checked_read(&mut self.ops, row.object)?;
-                    let disabled = disabled_state(row.object, snapshot.original(row.object))?;
+                    let original = snapshot.original(row.object).expect("inventory populated");
+                    let disabled = disabled_state(row.object, original)?;
                     check_transition(row.object, &current, &row.state, &disabled)?;
                     let rollback = if transition == Transition::DisableStartup {
                         Transition::DisableStartup
@@ -622,8 +634,10 @@ impl<O: SystemControlOps> SoftwareDisabler<O> {
             .iter()
             .filter(|&&object| snapshot.plan.contains(object))
         {
+            let Some(original) = snapshot.original(object) else {
+                continue;
+            };
             let result = (|| {
-                let original = snapshot.original(object);
                 let desired = disabled_state(object, original)?;
                 let current = checked_read(&mut self.ops, object)?;
                 check_transition(object, &current, original, &desired)?;

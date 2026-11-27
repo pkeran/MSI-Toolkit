@@ -108,6 +108,10 @@ pub(crate) fn run(
         qos: Qos::new(process_qos),
         boost_until: None,
         pending_fan_restore_at: None,
+        boot_restored: false,
+        pending_boot_mode: None,
+        boot_gpu_oc_at: None,
+        gpu_oc_sentinel_clear_at: None,
         executor: Executor::new(&port, inbox.clone(), backends.hal),
         flight: None,
         late_read: None,
@@ -261,6 +265,10 @@ struct Coordinator {
     qos: Qos,
     boost_until: Option<Instant>,
     pending_fan_restore_at: Option<Instant>,
+    boot_restored: bool,
+    pending_boot_mode: Option<PerformanceMode>,
+    boot_gpu_oc_at: Option<Instant>,
+    gpu_oc_sentinel_clear_at: Option<Instant>,
     executor: Executor,
     flight: Option<Flight>,
     late_read: Option<LateRead>,
@@ -793,6 +801,51 @@ impl Coordinator {
         if !self.active() || self.quarantine {
             return;
         }
+        if let Some(mode) = self.pending_boot_mode.take() {
+            if self.snapshot.hardware.cooler_boost != Some(true)
+                && self.submit_control(
+                    Origin::InternalRestore,
+                    ControlChange::SetPerformanceMode { mode },
+                    false,
+                    now,
+                    None,
+                )
+            {
+                return;
+            }
+        }
+        if self.boot_gpu_oc_at.is_some_and(|at| now >= at) {
+            self.boot_gpu_oc_at = None;
+            let (core_mhz, mem_mhz) = (
+                self.fan_profiles.gpu_oc_core_mhz,
+                self.fan_profiles.gpu_oc_mem_mhz,
+            );
+            if self.config.restore_gpu_offset_on_boot
+                && (core_mhz != 0 || mem_mhz != 0)
+                && self.snapshot.hardware.power_source == Some(PowerSource::Ac)
+                && self
+                    .snapshot
+                    .hardware
+                    .gpu_clock_offset
+                    .is_some_and(|o| o.core_mhz != core_mhz || o.mem_mhz != mem_mhz)
+            {
+                self.fan_profiles.gpu_oc_pending = true;
+                let _ = self.store.save_fan_profiles(&self.fan_profiles);
+                self.gpu_oc_sentinel_clear_at = Some(now + Duration::from_secs(15));
+                if self.submit_control(
+                    Origin::InternalRestore,
+                    ControlChange::SetGpuClockOffset { core_mhz, mem_mhz },
+                    false,
+                    now,
+                    None,
+                ) {
+                    return;
+                }
+                self.gpu_oc_sentinel_clear_at = None;
+                self.fan_profiles.gpu_oc_pending = false;
+                let _ = self.store.save_fan_profiles(&self.fan_profiles);
+            }
+        }
         if self
             .pending_fan_restore_at
             .is_some_and(|at| now >= at)
@@ -1139,6 +1192,42 @@ impl Coordinator {
         if let Some(count) = topology {
             self.update_topology(count);
         }
+        if !self.boot_restored && !self.readonly && !self.quarantine {
+            self.boot_restored = true;
+            if self.fan_profiles.gpu_oc_pending {
+                self.fan_profiles.gpu_oc_core_mhz = 0;
+                self.fan_profiles.gpu_oc_mem_mhz = 0;
+                self.fan_profiles.gpu_oc_pending = false;
+                let _ = self.store.save_fan_profiles(&self.fan_profiles);
+                self.store.diagnostic("gpu offset boot sentinel tripped; reset saved offset to 0 MHz");
+            }
+            let hw = &self.snapshot.hardware;
+            if hw.cooler_boost != Some(true)
+                && self.snapshot.ec_write_status == EcWriteStatus::Enabled
+            {
+                let target_mode = self
+                    .fan_profiles
+                    .last_mode
+                    .filter(|m| hw.supported_performance_modes.contains(m))
+                    .or(hw.performance_mode);
+                if let Some(mode) = target_mode {
+                    let mode_diff = hw.performance_mode != Some(mode);
+                    let fan_diff = self.fan_profiles.active_profile(mode).is_some_and(|p| {
+                        hw.fan_mode != Some(FanMode::Advanced)
+                            || p.cpu.is_some_and(|c| hw.cpu_fan.is_none_or(|f| f.curve != c))
+                            || p.gpu.is_some_and(|g| hw.gpu_fan.is_none_or(|f| f.curve != g))
+                    });
+                    if mode_diff || fan_diff {
+                        self.pending_boot_mode = Some(mode);
+                    }
+                }
+            }
+            if self.config.restore_gpu_offset_on_boot
+                && (self.fan_profiles.gpu_oc_core_mhz != 0 || self.fan_profiles.gpu_oc_mem_mhz != 0)
+            {
+                self.boot_gpu_oc_at = Some(Instant::now() + Duration::from_secs(5));
+            }
+        }
     }
 
     fn on_completion(&mut self, completion: Completion, now: Instant) {
@@ -1280,33 +1369,66 @@ impl Coordinator {
                             self.leases.manual_applied(target, before, until);
                         }
                     }
-                    if same_epoch && !source.automatic() && !release {
-                        if let ControlChange::SetFanCurve { channel, curve } = change {
-                            let mode = self
-                                .observation
-                                .as_ref()
-                                .and_then(|obs| obs.report.state.performance_mode);
-                            let other_curve = self.observation.as_ref().and_then(|obs| match channel {
-                                FanChannel::Cpu => obs.report.state.gpu_fan.map(|f| f.curve),
-                                FanChannel::Gpu => obs.report.state.cpu_fan.map(|f| f.curve),
-                            });
-                            if let Some(mode) = mode {
-                                if self
-                                    .fan_profiles
-                                    .record_custom_curve(mode, channel, curve, other_curve)
-                                    && !self.readonly
-                                {
-                                    if let Err(error) =
-                                        self.store.save_fan_profiles(&self.fan_profiles)
-                                    {
-                                        self.store.diagnostic(&format!(
-                                            "could not save fan-profiles.json: {error}"
-                                        ));
-                                    }
+                    if same_epoch && !source.automatic() && !release && !self.readonly {
+                        let mut save_profiles = false;
+                        match change {
+                            ControlChange::SetPerformanceMode { mode } => {
+                                if self.fan_profiles.last_mode != Some(mode) {
+                                    self.fan_profiles.last_mode = Some(mode);
+                                    save_profiles = true;
                                 }
+                            }
+                            ControlChange::SetFanCurve { channel, curve } => {
+                                let mode = self
+                                    .observation
+                                    .as_ref()
+                                    .and_then(|obs| obs.report.state.performance_mode);
+                                let other_curve = self.observation.as_ref().and_then(|obs| match channel {
+                                    FanChannel::Cpu => obs.report.state.gpu_fan.map(|f| f.curve),
+                                    FanChannel::Gpu => obs.report.state.cpu_fan.map(|f| f.curve),
+                                });
+                                if let Some(mode) = mode {
+                                    if self.fan_profiles.last_mode != Some(mode) {
+                                        self.fan_profiles.last_mode = Some(mode);
+                                        save_profiles = true;
+                                    }
+                                    save_profiles |= self
+                                        .fan_profiles
+                                        .record_custom_curve(mode, channel, curve, other_curve);
+                                }
+                            }
+                            ControlChange::SetGpuClockOffset { core_mhz, mem_mhz } => {
+                                self.boot_gpu_oc_at = None;
+                                self.gpu_oc_sentinel_clear_at = None;
+                                if self.fan_profiles.gpu_oc_core_mhz != core_mhz
+                                    || self.fan_profiles.gpu_oc_mem_mhz != mem_mhz
+                                    || self.fan_profiles.gpu_oc_pending
+                                {
+                                    self.fan_profiles.gpu_oc_core_mhz = core_mhz;
+                                    self.fan_profiles.gpu_oc_mem_mhz = mem_mhz;
+                                    self.fan_profiles.gpu_oc_pending = false;
+                                    save_profiles = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                        if save_profiles {
+                            if let Err(error) = self.store.save_fan_profiles(&self.fan_profiles) {
+                                self.store.diagnostic(&format!(
+                                    "could not save fan-profiles.json: {error}"
+                                ));
                             }
                         }
                     }
+                }
+                if result.is_err()
+                    && matches!(source, Origin::InternalRestore)
+                    && matches!(change, ControlChange::SetGpuClockOffset { .. })
+                    && self.fan_profiles.gpu_oc_pending
+                {
+                    self.gpu_oc_sentinel_clear_at = None;
+                    self.fan_profiles.gpu_oc_pending = false;
+                    let _ = self.store.save_fan_profiles(&self.fan_profiles);
                 }
                 if result.is_err() && matches!(source, Origin::LockLighting) {
                     self.release_lock_lighting();
@@ -1795,6 +1917,8 @@ impl Coordinator {
             self.telemetry.next,
             self.inspect_retry_at,
             self.pending_fan_restore_at,
+            self.boot_gpu_oc_at,
+            self.gpu_oc_sentinel_clear_at,
             self.topology_due,
             self.boost_until,
             self.qos.trim_deadline(),
@@ -1814,6 +1938,13 @@ impl Coordinator {
     fn process_deadlines(&mut self, now: Instant) {
         let ms = self.now_ms(now);
         let worker_idle = self.flight.is_none() && self.late_read.is_none();
+        if self.gpu_oc_sentinel_clear_at.is_some_and(|until| now >= until) {
+            self.gpu_oc_sentinel_clear_at = None;
+            if self.fan_profiles.gpu_oc_pending {
+                self.fan_profiles.gpu_oc_pending = false;
+                let _ = self.store.save_fan_profiles(&self.fan_profiles);
+            }
+        }
         if self.inspect_retry_at.is_some_and(|until| now >= until) {
             self.inspect_retry_at = None;
             if self.observation.is_none() && self.active() && !self.quarantine {
