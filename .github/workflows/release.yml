@@ -49,7 +49,7 @@ jobs:
           --skip native_access_check_confirms_the_medium_initiator_mask
           --skip native_readonly_hal_and_rule_engine_cross_process
           --skip unpinned_custom_endpoint_does_not_grant_ui_telemetry
-          --skip native_readonly_system_tools_can_inspect_all_eleven_objects
+          --skip native_readonly_system_tools_can_inspect_all_managed_objects
 
       - name: Build & stage release artifacts with SHA256SUMS
         shell: pwsh
