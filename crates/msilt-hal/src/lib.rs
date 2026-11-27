@@ -29,6 +29,8 @@ pub mod oem_manager;
 #[cfg(windows)]
 pub mod startup;
 #[cfg(windows)]
+mod system_telemetry;
+#[cfg(windows)]
 mod windows_hal;
 #[cfg(windows)]
 pub mod wmi_acpi;

@@ -1135,6 +1135,8 @@ fn parse_action(value: &Value, path: &str) -> Result<ControlChange, RuleError> {
             check_keys(table, path, &["field", "zones"])?;
             ControlChange::SetKeyboardLighting {
                 zones: parse_zones(require(table, "zones", path)?, &format!("{path}.zones"))?,
+                effect: Default::default(),
+                speed: Default::default(),
             }
         }
         other => {

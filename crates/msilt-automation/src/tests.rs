@@ -6,7 +6,7 @@
 use msilt_core::{
     AutomationAction, AutomationContext, AutomationEngine, AutomationEvent, CapabilityFlags,
     ControlChange, ControlTarget, DaemonStatus, EcWriteStatus, ErrorCode, FanChannel, FanCurve,
-    FanPoint, HardwareState, LeaseOwner, OsdKind, PerformanceMode, PowerSource, SystemSnapshot,
+    FanPoint, GpuClockOffsetState, HardwareState, LeaseOwner, OsdKind, PerformanceMode, PowerSource, SystemSnapshot,
 };
 
 use crate::engine::{BlockReason, DryRunAction, DryRunInput, RuleEngine};
@@ -34,6 +34,7 @@ fn caps() -> CapabilityFlags {
         | CapabilityFlags::COOLER_BOOST
         | CapabilityFlags::CHARGE_LIMIT
         | CapabilityFlags::FAN_CURVE
+        | CapabilityFlags::GPU_CLOCK_OFFSET
 }
 
 fn ready_snapshot() -> SystemSnapshot {
@@ -57,6 +58,10 @@ fn ready_snapshot() -> SystemSnapshot {
             display_refresh_hz: Some(60),
             supported_charge_limits: vec![60, 80, 100],
             supported_color_profiles: vec!["factory-srgb".to_owned()],
+            gpu_clock_offset: Some(GpuClockOffsetState {
+                core_mhz: 100, mem_mhz: 200,
+                core_min_mhz: 0, core_max_mhz: 200, mem_min_mhz: 0, mem_max_mhz: 200,
+            }),
             ..HardwareState::default()
         },
         manual_overrides: Vec::new(),
@@ -693,6 +698,26 @@ fn rejects_bad_conditions() {
 }
 
 // ------------------------------------------------------------------- engine ---
+
+#[test]
+fn startup_and_resume_do_not_emit_gpu_offset_actions() {
+    let mut harness = Harness::new(game_rule());
+    let original = harness.snapshot.hardware.gpu_clock_offset;
+    assert!(harness.snapshot.writable.contains(CapabilityFlags::GPU_CLOCK_OFFSET));
+    for event in [
+        AutomationEvent::RulesReloaded,
+        AutomationEvent::StateChanged { revision: 1 },
+        AutomationEvent::ForegroundChanged { app_id: Some("game:cs2".into()), instance: Some(77) },
+        AutomationEvent::SessionChanged { unlocked: false },
+        AutomationEvent::SessionChanged { unlocked: true },
+        AutomationEvent::StateChanged { revision: 2 },
+    ] {
+        assert!(acquired(&harness.feed(event)).iter().all(|change|
+            !matches!(change, ControlChange::SetGpuClockOffset { .. })));
+    }
+    assert_eq!(TargetSlot::of(&ControlTarget::GpuClockOffset {}), None);
+    assert_eq!(harness.snapshot.hardware.gpu_clock_offset, original);
+}
 
 #[test]
 fn game_enter_acquires_and_exit_releases() {

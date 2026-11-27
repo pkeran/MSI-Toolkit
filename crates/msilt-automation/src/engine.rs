@@ -1309,8 +1309,10 @@ fn change_fingerprint(change: &ControlChange) -> u64 {
                 feed(&mut hash, byte);
             }
         }
-        ControlChange::SetKeyboardLighting { zones } => {
+        ControlChange::SetKeyboardLighting { zones, effect, speed } => {
             feed(&mut hash, 8);
+            feed(&mut hash, *effect as u8);
+            feed(&mut hash, *speed as u8);
             for zone in zones {
                 feed(&mut hash, zone.r);
                 feed(&mut hash, zone.g);

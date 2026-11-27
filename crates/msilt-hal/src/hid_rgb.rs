@@ -1,7 +1,7 @@
 use std::mem::size_of;
 use std::time::Instant;
 
-use msilt_core::{KEYBOARD_ZONE_COUNT, Rgb8};
+use msilt_core::{KEYBOARD_ZONE_COUNT, KeyboardEffect, KeyboardSpeed, Rgb8};
 use serde::Serialize;
 use windows::Win32::Devices::HumanInterfaceDevice::*;
 use windows::Win32::Foundation::{ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE};
@@ -86,6 +86,8 @@ pub(crate) fn rgb_conflict(conflicts: &ConflictReport) -> Option<bool> {
 
 pub(crate) fn set_keyboard_lighting(
     zones: &[Rgb8; KEYBOARD_ZONE_COUNT],
+    effect: KeyboardEffect,
+    speed: KeyboardSpeed,
     allow_oem_conflict: bool,
     deadline: Instant,
 ) -> Result<(), Diagnostic> {
@@ -112,7 +114,7 @@ pub(crate) fn set_keyboard_lighting(
             .detail("HID collection changed before transmission"));
     }
     verify_conflicts(allow_oem_conflict)?;
-    send_frame(zones, |report| {
+    send_frame(zones, effect, speed, |report| {
         before_deadline(deadline, "HidD_SetFeature")?;
         if unsafe { HidD_SetFeature(handle.0, report.as_ptr().cast(), REPORT_BYTES as u32) } {
             Ok(())
@@ -209,21 +211,77 @@ fn feature_value_cap_matches(report_id: u8, bit_size: u16, report_count: u16) ->
         && usize::from(report_count).saturating_add(1) == REPORT_BYTES
 }
 
+const ALL_ZONES_MASK: u32 = (1u32 << KEYBOARD_ZONE_COUNT) - 1;
+
+// Official MSI Mystic Light 7-stop rainbow loop (position%, R, G, B).
+const RAINBOW_STOPS: [(u8, u8, u8, u8); 7] = [
+    (0, 255, 0, 0),
+    (17, 255, 255, 0),
+    (33, 0, 255, 0),
+    (50, 0, 255, 255),
+    (67, 0, 0, 255),
+    (83, 255, 0, 255),
+    (100, 255, 0, 0),
+];
+
+fn period_cs(effect: KeyboardEffect, speed: KeyboardSpeed) -> u16 {
+    match effect {
+        KeyboardEffect::Static => 100,
+        KeyboardEffect::Breathing | KeyboardEffect::ColorCycle => match speed {
+            KeyboardSpeed::Slow => 800,
+            KeyboardSpeed::Medium => 600,
+            KeyboardSpeed::Fast => 400,
+        },
+        KeyboardEffect::Wave => match speed {
+            KeyboardSpeed::Slow => 500,
+            KeyboardSpeed::Medium => 350,
+            KeyboardSpeed::Fast => 200,
+        },
+    }
+}
+
+fn select_report(mask: u32) -> FeatureReport {
+    let mut select = [0; REPORT_BYTES];
+    select[..2].copy_from_slice(&[REPORT_ID, 0x01]);
+    select[2..6].copy_from_slice(&mask.to_le_bytes());
+    select
+}
+
+fn off_report() -> FeatureReport {
+    let mut report = [0; REPORT_BYTES];
+    report[..3].copy_from_slice(&[REPORT_ID, 0x02, 0x00]);
+    report
+}
+
 fn send_frame<E>(
     zones: &[Rgb8; KEYBOARD_ZONE_COUNT],
+    effect: KeyboardEffect,
+    speed: KeyboardSpeed,
     mut feature: impl FnMut(&FeatureReport) -> Result<(), E>,
 ) -> Result<(), E> {
-    let mut remaining = (1u32 << KEYBOARD_ZONE_COUNT) - 1;
+    match effect {
+        KeyboardEffect::ColorCycle | KeyboardEffect::Wave => {
+            let scale = zones
+                .iter()
+                .map(|c| c.r.max(c.g).max(c.b))
+                .max()
+                .unwrap_or(0);
+            feature(&select_report(ALL_ZONES_MASK))?;
+            if scale == 0 {
+                return feature(&off_report());
+            }
+            let report = rainbow_report(effect, speed, scale);
+            return feature(&report);
+        }
+        KeyboardEffect::Static | KeyboardEffect::Breathing => {}
+    }
+    let mut remaining = ALL_ZONES_MASK;
     while remaining != 0 {
         let color = zones[remaining.trailing_zeros() as usize];
-        let mask =
-            zones.iter().enumerate().fold(
-                0,
-                |mask, (i, rgb)| {
-                    if *rgb == color { mask | (1 << i) } else { mask }
-                },
-            );
-        let [select, colors] = reports(mask & remaining, color);
+        let mask = zones.iter().enumerate().fold(0, |mask, (i, rgb)| {
+            if *rgb == color { mask | (1 << i) } else { mask }
+        });
+        let [select, colors] = reports(mask & remaining, color, effect, speed);
         feature(&select)?;
         feature(&colors)?;
         remaining &= !mask;
@@ -231,16 +289,93 @@ fn send_frame<E>(
     Ok(())
 }
 
-fn reports(mask: u32, Rgb8 { r, g, b }: Rgb8) -> [FeatureReport; 2] {
-    let mut select = [0; REPORT_BYTES];
-    select[..2].copy_from_slice(&[REPORT_ID, 0x01]);
-    select[2..6].copy_from_slice(&mask.to_le_bytes());
+// MS-1603 SMD RGB LED white-balance channel ceilings (out of 255).
+// Green and blue SMD dies have higher luminous efficacy than red; toning G/B
+// down aligns #FFFFFF to neutral D65 white and prevents pastel reds/pinks
+// (such as #FFCECE) from washing out into neutral white on the physical keys.
+const LED_GAIN_R: u64 = 255;
+const LED_GAIN_G: u64 = 199;
+const LED_GAIN_B: u64 = 209;
+
+/// Converts an sRGB 8-bit channel to linear PWM duty for direct-view RGB LEDs
+/// using a smooth perceptual gamma (~2.7) integer curve plus SMD white balance.
+const fn led_channel(c: u8, gain: u64) -> u8 {
+    if c == 0 {
+        return 0;
+    }
+    let v = c as u64;
+    // (v^2 * (255 + 3*v)) / (4 * 255^3) closely matches (v/255)^2.7 with exact endpoints.
+    const DEN: u64 = 4 * 255 * 255 * 255;
+    let num = v * v * (255 + 3 * v) * gain;
+    let out = ((num + DEN / 2) / DEN) as u8;
+    if out == 0 { 1 } else { out }
+}
+
+const fn calibrate_led(Rgb8 { r, g, b }: Rgb8) -> Rgb8 {
+    Rgb8 {
+        r: led_channel(r, LED_GAIN_R),
+        g: led_channel(g, LED_GAIN_G),
+        b: led_channel(b, LED_GAIN_B),
+    }
+}
+
+fn reports(
+    mask: u32,
+    rgb: Rgb8,
+    effect: KeyboardEffect,
+    speed: KeyboardSpeed,
+) -> [FeatureReport; 2] {
+    let select = select_report(mask);
+    if rgb.r == 0 && rgb.g == 0 && rgb.b == 0 {
+        return [select, off_report()];
+    }
+    let Rgb8 { r, g, b } = calibrate_led(rgb);
+    let [p_lo, p_hi] = period_cs(effect, speed).to_le_bytes();
     let mut colors = [0; REPORT_BYTES];
-    // Static mode with identical endpoints; the period is expressed in centiseconds.
-    colors[..18].copy_from_slice(&[
-        REPORT_ID, 0x02, 0x01, 100, 0, 0, 0, 0x0F, 1, 0, 0, r, g, b, 100, r, g, b,
-    ]);
+    match effect {
+        KeyboardEffect::Breathing => {
+            // Official MSI Class_24Zone single-color breath uses 3 stops:
+            // 0% off -> 50% peak color -> 100% off.
+            colors[..22].copy_from_slice(&[
+                REPORT_ID, 0x02, 0x02, p_lo, p_hi, 0, 0, 0x0F, 1, 0,
+                0, 0, 0, 0,
+                50, r, g, b,
+                100, 0, 0, 0,
+            ]);
+        }
+        _ => {
+            colors[..18].copy_from_slice(&[
+                REPORT_ID, 0x02, 0x01, p_lo, p_hi, 0, 0, 0x0F, 1, 0,
+                0, r, g, b,
+                100, r, g, b,
+            ]);
+        }
+    }
     [select, colors]
+}
+
+fn rainbow_report(effect: KeyboardEffect, speed: KeyboardSpeed, scale: u8) -> FeatureReport {
+    let (mode, cy, wl, dir) = match effect {
+        KeyboardEffect::Wave => (0x04, 50, 8, 1),
+        _ => (0x03, 0, 0x0F, 0),
+    };
+    let [p_lo, p_hi] = period_cs(effect, speed).to_le_bytes();
+    let mut report = [0; REPORT_BYTES];
+    report[..10].copy_from_slice(&[REPORT_ID, 0x02, mode, p_lo, p_hi, 0, cy, wl, 1, dir]);
+    let s = u16::from(scale);
+    for (idx, (pos, r, g, b)) in RAINBOW_STOPS.into_iter().enumerate() {
+        let off = 10 + idx * 4;
+        let cal = calibrate_led(Rgb8 {
+            r: ((u16::from(r) * s) / 255) as u8,
+            g: ((u16::from(g) * s) / 255) as u8,
+            b: ((u16::from(b) * s) / 255) as u8,
+        });
+        report[off] = pos;
+        report[off + 1] = cal.r;
+        report[off + 2] = cal.g;
+        report[off + 3] = cal.b;
+    }
+    report
 }
 
 struct Preparsed(PHIDP_PREPARSED_DATA);
@@ -376,30 +511,103 @@ mod tests {
             g: 0x34,
             b: 0x56,
         };
-        let [first, colors] = reports(1, color);
-        let [last, _] = reports(1 << 23, color);
+        let cal = calibrate_led(color);
+        let [first, colors] = reports(1, color, KeyboardEffect::Static, KeyboardSpeed::Medium);
+        let [last, _] = reports(1 << 23, color, KeyboardEffect::Static, KeyboardSpeed::Medium);
         assert_eq!(&first[..6], &[2, 1, 1, 0, 0, 0]);
         assert_eq!(&last[..6], &[2, 1, 0, 0, 0x80, 0]);
         assert_eq!(
             &colors[..18],
             &[
-                2, 2, 1, 100, 0, 0, 0, 15, 1, 0, 0, 0x12, 0x34, 0x56, 100, 0x12, 0x34, 0x56
+                2, 2, 1, 100, 0, 0, 0, 15, 1, 0, 0, cal.r, cal.g, cal.b, 100, cal.r, cal.g, cal.b
             ]
         );
         assert_eq!(first[6..], [0; 58]);
         assert_eq!(last[6..], [0; 58]);
         assert_eq!(colors[18..], [0; 46]);
+
+        // Black zone emits true hardware Off (mode 0) instead of static black.
+        let [_, off] = reports(1, Rgb8 { r: 0, g: 0, b: 0 }, KeyboardEffect::Static, KeyboardSpeed::Medium);
+        assert_eq!(&off[..3], &[2, 2, 0]);
+        assert_eq!(off[3..], [0; 61]);
+
+        // Breathing uses mode 2, MSI periods (800/600/400 cs), and 3 stops (0% off -> 50% peak -> 100% off).
+        let [_, breath] = reports(1, color, KeyboardEffect::Breathing, KeyboardSpeed::Slow);
+        assert_eq!(
+            &breath[..22],
+            &[
+                2, 2, 2, 0x20, 0x03, 0, 0, 15, 1, 0,
+                0, 0, 0, 0,
+                50, cal.r, cal.g, cal.b,
+                100, 0, 0, 0,
+            ]
+        );
+        assert_eq!(breath[22..], [0; 42]);
+        let [_, breath_fast] = reports(1, color, KeyboardEffect::Breathing, KeyboardSpeed::Fast);
+        assert_eq!(&breath_fast[..5], &[2, 2, 2, 0x90, 0x01]);
+    }
+
+    #[test]
+    fn led_calibration_preserves_primaries_and_fixes_pastel_white_washout() {
+        assert_eq!(calibrate_led(Rgb8 { r: 0, g: 0, b: 0 }), Rgb8 { r: 0, g: 0, b: 0 });
+        assert_eq!(calibrate_led(Rgb8 { r: 255, g: 0, b: 0 }), Rgb8 { r: 255, g: 0, b: 0 });
+        assert_eq!(calibrate_led(Rgb8 { r: 255, g: 255, b: 255 }), Rgb8 { r: 255, g: 199, b: 209 });
+        // Pastel pink (#FFCECE) must drop G/B below 50% of R so LEDs look visibly pink, not white.
+        let pink = calibrate_led(Rgb8 { r: 255, g: 206, b: 206 });
+        assert_eq!(pink.r, 255);
+        assert!(pink.g < 120 && pink.b < 125 && pink.b >= pink.g, "got {pink:?}");
+        // Orange (#FF8000) must strongly attenuate green so LEDs look orange instead of yellow.
+        let orange = calibrate_led(Rgb8 { r: 255, g: 128, b: 0 });
+        assert_eq!(orange.r, 255);
+        assert!(orange.g > 0 && orange.g < 40 && orange.b == 0, "got {orange:?}");
+    }
+
+    #[test]
+    fn color_cycle_and_wave_use_msi_rainbow_and_speed_tables() {
+        let lit = [Rgb8 { r: 255, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT];
+        let mut sent = Vec::new();
+        send_frame(&lit, KeyboardEffect::ColorCycle, KeyboardSpeed::Medium, |r| {
+            sent.push(*r);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(&sent[0][..6], &[2, 1, 0xFF, 0xFF, 0xFF, 0]);
+        assert_eq!(&sent[1][..10], &[2, 2, 3, 0x58, 0x02, 0, 0, 15, 1, 0]);
+        assert_eq!(&sent[1][10..18], &[0, 255, 0, 0, 17, 255, 199, 0]);
+        assert_eq!(&sent[1][34..38], &[100, 255, 0, 0]);
+
+        sent.clear();
+        send_frame(&lit, KeyboardEffect::Wave, KeyboardSpeed::Fast, |r| {
+            sent.push(*r);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(&sent[1][..10], &[2, 2, 4, 200, 0, 0, 50, 8, 1, 1]);
+
+        // Zero brightness / all-black zones send hardware Off even in Wave mode.
+        sent.clear();
+        let off = [Rgb8 { r: 0, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT];
+        send_frame(&off, KeyboardEffect::Wave, KeyboardSpeed::Medium, |r| {
+            sent.push(*r);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(&sent[1][..3], &[2, 2, 0]);
     }
 
     #[test]
     fn frame_covers_each_zone_once_and_groups_equal_colors() {
         let black = Rgb8 { r: 0, g: 0, b: 0 };
         let green = Rgb8 { r: 0, g: 255, b: 0 };
+        let cal_green = calibrate_led(green);
         let mut zones = [black; KEYBOARD_ZONE_COUNT];
         zones[1] = green;
         zones[23] = green;
         let mut sent = Vec::new();
-        send_frame(&zones, |report| {
+        send_frame(&zones, KeyboardEffect::Static, KeyboardSpeed::Medium, |report| {
             sent.push(*report);
             Ok::<_, ()>(())
         })
@@ -413,7 +621,11 @@ mod tests {
             covered |= mask;
             for (i, rgb) in zones.iter().enumerate() {
                 if mask & (1 << i) != 0 {
-                    assert_eq!(&pair[1][11..14], &[rgb.r, rgb.g, rgb.b]);
+                    if *rgb == black {
+                        assert_eq!(pair[1][2], 0);
+                    } else {
+                        assert_eq!(&pair[1][11..14], &[cal_green.r, cal_green.g, cal_green.b]);
+                    }
                 }
             }
         }
@@ -429,21 +641,22 @@ mod tests {
             b: 42,
         });
         let mut sent = Vec::new();
-        send_frame(&zones, |report| {
+        send_frame(&zones, KeyboardEffect::Static, KeyboardSpeed::Medium, |report| {
             sent.push(*report);
             Ok::<_, ()>(())
         })
         .unwrap();
         assert_eq!(sent.len(), 48);
         for (i, pair) in sent.chunks_exact(2).enumerate() {
+            let cal = calibrate_led(zones[i]);
             assert_eq!(&pair[0][..2], &[2, 1]);
             assert_eq!(&pair[0][2..6], &(1u32 << i).to_le_bytes());
             assert_eq!(&pair[1][..3], &[2, 2, 1]);
-            assert_eq!(&pair[1][11..14], &[i as u8, 255 - i as u8, 42]);
+            assert_eq!(&pair[1][11..14], &[cal.r, cal.g, cal.b]);
         }
         let mut calls = 0;
         assert_eq!(
-            send_frame(&zones, |_| {
+            send_frame(&zones, KeyboardEffect::Static, KeyboardSpeed::Medium, |_| {
                 calls += 1;
                 if calls == 2 {
                     Err("feature transfer failed")

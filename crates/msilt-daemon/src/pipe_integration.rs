@@ -52,6 +52,8 @@ struct Counts {
     inspect_gate: Mutex<Option<Arc<Gate>>>,
     inspect_failures: AtomicU32,
     sample_failures: AtomicU32,
+    gpu_telemetry_enabled: AtomicBool,
+    gpu_mux: Mutex<Option<GpuMuxMode>>,
 }
 
 #[derive(Default)]
@@ -112,6 +114,7 @@ impl HardwareRead for DryRun {
                 display_refresh_hz: Some(self.refresh),
                 supported_refresh_rates: vec![60, 120, 240],
                 keyboard_zones: Some(self.zones),
+                gpu_mux: self.counts.gpu_mux.lock().unwrap().map(|current| GpuMuxState { current, pending: None }),
                 ..Default::default()
             },
         })
@@ -129,11 +132,26 @@ impl HardwareRead for DryRun {
         {
             return Err(HalError::TimedOut);
         }
+        let gpu = self.counts.gpu_telemetry_enabled.load(Acquire);
         Ok(TelemetrySample {
             sampled_at_unix_ms: unix_ms(),
             cpu_temperature_c: Some(48),
+            cpu_utilization_percent: Some(23),
+            memory_used_mb: Some(16_384),
+            memory_total_mb: Some(65_536),
+            gpu_power_mw: gpu.then_some(18_000),
+            gpu_power_limit_mw: gpu.then_some(175_000),
+            gpu_utilization_percent: gpu.then_some(7),
+            gpu_clock_mhz: gpu.then_some(1200),
+            gpu_mem_clock_mhz: gpu.then_some(405),
+            gpu_vram_used_mb: gpu.then_some(1969),
+            gpu_vram_total_mb: gpu.then_some(24463),
             ..Default::default()
         })
+    }
+
+    fn set_gpu_telemetry(&mut self, enabled: bool) {
+        self.counts.gpu_telemetry_enabled.store(enabled, Release);
     }
 }
 
@@ -161,7 +179,7 @@ impl PlatformControl for DryRun {
     fn set_color_profile(&mut self, _: &str) -> HalResult<()> {
         Err(HalError::Unsupported)
     }
-    fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+    fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT], _: KeyboardEffect, _: KeyboardSpeed) -> HalResult<()> {
         self.zones = *zones;
         self.counts.keypad_writes.fetch_add(1, AcqRel);
         Ok(())
@@ -625,6 +643,7 @@ fn real_pipe_v1_round_trip_and_last_subscriber_stops_timer() {
         state: true,
         osd: true,
         telemetry: false,
+        gpu_telemetry: false,
     };
     let with_telemetry = Subscriptions {
         telemetry: true,
@@ -776,6 +795,118 @@ fn queued_ttl_and_disconnect_never_execute_waiting_controls() {
         Ok(IpcReply::Snapshot { snapshot })
     );
     assert_eq!(host.counts.calls.load(Acquire), 1);
+}
+
+#[test]
+fn gpu_subscription_respects_opt_in_pause_lock_and_last_disconnect() {
+    let host = Fixture::start(None, None);
+    *host.counts.gpu_mux.lock().unwrap() = Some(GpuMuxMode::Hybrid);
+    let mut first = host.client();
+    let mut second = host.client();
+    let mut cli = host.client();
+    first.hello(ClientKind::Ui);
+    second.hello(ClientKind::Ui);
+    cli.hello(ClientKind::Cli);
+    let cpu = Subscriptions { telemetry: true, ..Default::default() };
+    let gpu = Subscriptions { gpu_telemetry: true, ..cpu };
+    assert_eq!(cli.call(IpcCommand::SetSubscriptions {
+        topics: Subscriptions { gpu_telemetry: true, ..Default::default() },
+    }), Err(ErrorCode::Unsupported));
+    subscribe(&mut first, cpu);
+    wait_for(WAIT, || host.armed());
+    assert!(!host.counts.gpu_telemetry_enabled.load(Acquire));
+    let sample = first.event(|event| matches!(event, IpcEvent::TelemetryTick { .. }));
+    assert!(matches!(sample, IpcEvent::TelemetryTick { sample }
+        if sample.cpu_utilization_percent == Some(23) && sample.memory_used_mb == Some(16_384)
+            && sample.memory_total_mb == Some(65_536) && sample.gpu_power_mw.is_none()));
+
+    subscribe(&mut first, gpu);
+    wait_for(WAIT, || host.counts.gpu_telemetry_enabled.load(Acquire));
+    subscribe(&mut second, gpu);
+    subscribe(&mut first, cpu);
+    assert!(host.counts.gpu_telemetry_enabled.load(Acquire));
+    subscribe(&mut second, cpu);
+    wait_for(WAIT, || !host.counts.gpu_telemetry_enabled.load(Acquire));
+    assert!(host.armed(), "CPU telemetry can stay active after GPU opt-out");
+
+    subscribe(&mut first, gpu);
+    wait_for(WAIT, || host.counts.gpu_telemetry_enabled.load(Acquire));
+    host.inbox.session(false);
+    wait_for(WAIT, || !host.armed() && !host.counts.gpu_telemetry_enabled.load(Acquire));
+    host.inbox.session(true);
+    wait_for(WAIT, || host.armed() && host.counts.gpu_telemetry_enabled.load(Acquire));
+    drop(first);
+    wait_for(WAIT, || !host.counts.gpu_telemetry_enabled.load(Acquire));
+    assert!(host.armed());
+    subscribe(&mut second, Subscriptions::default());
+    wait_for(WAIT, || !host.armed());
+    assert_eq!(host.counts.calls.load(Acquire), 0);
+}
+
+#[test]
+fn gpu_auto_sampling_requires_discrete_mux_and_an_active_ui_subscriber() {
+    for mux in [None, Some(GpuMuxMode::Hybrid), Some(GpuMuxMode::Integrated), Some(GpuMuxMode::Discrete)] {
+        let host = Fixture::start(None, None);
+        *host.counts.gpu_mux.lock().unwrap() = mux;
+        let mut ui = host.client();
+        ui.hello(ClientKind::Ui);
+        assert!(!host.counts.gpu_telemetry_enabled.load(Acquire));
+        subscribe(&mut ui, Subscriptions { telemetry: true, ..Default::default() });
+        let IpcEvent::TelemetryTick { sample } = ui.event(|event| matches!(event, IpcEvent::TelemetryTick { .. }))
+        else { panic!("missing telemetry sample"); };
+        let discrete = mux == Some(GpuMuxMode::Discrete);
+        assert_eq!(host.counts.gpu_telemetry_enabled.load(Acquire), discrete);
+        assert_eq!(sample.gpu_power_mw, discrete.then_some(18_000));
+        assert_eq!(sample.gpu_power_limit_mw, discrete.then_some(175_000));
+        assert_eq!(sample.gpu_utilization_percent, discrete.then_some(7));
+        assert_eq!(sample.gpu_clock_mhz, discrete.then_some(1200));
+        assert_eq!(sample.gpu_mem_clock_mhz, discrete.then_some(405));
+        assert_eq!(sample.gpu_vram_used_mb, discrete.then_some(1969));
+        assert_eq!(sample.gpu_vram_total_mb, discrete.then_some(24463));
+        assert_eq!(sample.cpu_utilization_percent, Some(23));
+        assert_eq!(sample.memory_total_mb, Some(65_536));
+        subscribe(&mut ui, Subscriptions::default());
+        wait_for(WAIT, || !host.armed() && !host.counts.gpu_telemetry_enabled.load(Acquire));
+    }
+}
+
+#[test]
+fn gpu_stop_during_an_inflight_sample_is_released_on_the_serial_worker() {
+    let gate = Arc::new(Gate::default());
+    let host = Fixture::start(None, Some(gate.clone()));
+    let mut ui = host.client();
+    ui.hello(ClientKind::Ui);
+    subscribe(&mut ui, Subscriptions { telemetry: true, gpu_telemetry: true, ..Default::default() });
+    wait_for(Duration::from_secs(2), || gate.entered.load(Acquire));
+    assert!(host.counts.gpu_telemetry_enabled.load(Acquire));
+    drop(ui);
+    wait_for(WAIT, || !host.armed());
+    gate.release();
+    wait_for(WAIT, || !host.counts.gpu_telemetry_enabled.load(Acquire));
+    assert_eq!(host.counts.calls.load(Acquire), 0);
+}
+
+#[test]
+fn gpu_setting_wakeups_coalesce_without_consuming_control_completions() {
+    let gate = Arc::new(Gate::default());
+    let host = Fixture::start(Some(gate.clone()), None);
+    let mut ui = host.client();
+    let mut cli = host.client();
+    let initial = ui.hello(ClientKind::Ui);
+    cli.hello(ClientKind::Cli);
+    let cpu = Subscriptions { telemetry: true, ..Default::default() };
+    subscribe(&mut ui, Subscriptions { gpu_telemetry: true, ..cpu });
+    wait_for(WAIT, || host.counts.gpu_telemetry_enabled.load(Acquire));
+    let id = cli.send(set_hz(initial.revision, 120), None, false);
+    wait_for(WAIT, || gate.entered.load(Acquire));
+    for enabled in [false, true, false, true, false, true, false, true, false] {
+        subscribe(&mut ui, Subscriptions { gpu_telemetry: enabled, ..cpu });
+    }
+    gate.release();
+    assert!(matches!(cli.reply(id), Ok(IpcReply::Applied { snapshot }) if snapshot.hardware.display_refresh_hz == Some(120)));
+    wait_for(WAIT, || !host.counts.gpu_telemetry_enabled.load(Acquire));
+    assert_eq!(host.counts.calls.load(Acquire), 1);
+    assert!(matches!(cli.call(IpcCommand::GetSnapshot {}), Ok(IpcReply::Snapshot { snapshot }) if snapshot.status == DaemonStatus::Ready));
 }
 
 #[test]
@@ -1290,7 +1421,7 @@ fn per_mode_custom_fan_curves_persist_switch_and_reset_to_auto() {
         fn set_color_profile(&mut self, _: &str) -> HalResult<()> {
             Err(HalError::Unsupported)
         }
-        fn set_keyboard_lighting(&mut self, _: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+        fn set_keyboard_lighting(&mut self, _: &[Rgb8; KEYBOARD_ZONE_COUNT], _: KeyboardEffect, _: KeyboardSpeed) -> HalResult<()> {
             Err(HalError::Unsupported)
         }
     }

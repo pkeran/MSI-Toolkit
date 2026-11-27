@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use msilt_core::ipc::{
     ClientKind, FRAME_HEADER_LEN, FrameError, IPC_VERSION, IpcCommand, IpcMessage, IpcReply,
-    IpcResponse, IpcResult, decode_frame,
+    IpcResponse, IpcResult, decode_server_frame,
 };
 use msilt_core::{ControlChange, ControlTarget, FanChannel};
 
@@ -195,12 +195,12 @@ impl<T: Transport> Client<T> {
     fn read_frame(&mut self) -> Result<IpcMessage, Failure> {
         let mut header = [0; FRAME_HEADER_LEN];
         self.io.read_exact(&mut header)?;
-        decode_frame(&header)?; // Validate the length before growing the receive buffer.
+        decode_server_frame(&header)?; // Validate the length before growing the receive buffer.
         let len = u32::from_le_bytes(header) as usize;
         self.frame.resize(FRAME_HEADER_LEN + len, 0);
         self.frame[..FRAME_HEADER_LEN].copy_from_slice(&header);
         self.io.read_exact(&mut self.frame[FRAME_HEADER_LEN..])?;
-        match decode_frame(&self.frame)? {
+        match decode_server_frame(&self.frame)? {
             Some((message, _)) => Ok(message),
             None => Err(Failure::Protocol("incomplete IPC frame")),
         }
@@ -309,7 +309,7 @@ mod tests {
     use std::io::Cursor;
 
     use msilt_core::ipc::{
-        ErrorCode, IpcError, IpcEvent, IpcRequest, MAX_FRAME_PAYLOAD, encode_frame,
+        ErrorCode, IpcError, IpcEvent, IpcRequest, MAX_FRAME_PAYLOAD, decode_frame, encode_frame,
     };
     use msilt_core::{
         AppConfig, ControlChange, ControlTarget, FanChannel, PerformanceMode, SystemSnapshot,

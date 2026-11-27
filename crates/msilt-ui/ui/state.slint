@@ -62,6 +62,36 @@ export global Fmt {
     public pure function rpm(v: int) -> string { v < 0 ? "—" : "" + v + " RPM"; }
     public pure function hz(v: int) -> string { v < 0 ? "—" : "" + v + " Hz"; }
     public pure function watts(mw: int) -> string { mw < 0 ? "—" : "" + Math.round(mw / 1000.0) + " W"; }
+    public pure function watts-pair(mw: int, limit: int) -> string {
+        if mw < 0 { return "—"; }
+        if limit > 0 { return "" + Math.round(mw / 1000.0) + " / " + Math.round(limit / 1000.0) + " W"; }
+        return "" + Math.round(mw / 1000.0) + " W";
+    }
+    public pure function mhz(v: int) -> string { v < 0 ? "—" : "" + v + " MHz"; }
+    public pure function offset-mhz(v: int) -> string {
+        if v > 0 { return "+" + v + " MHz"; }
+        return "" + v + " MHz";
+    }
+    public pure function gb1(mb: int) -> string {
+        if mb < 0 { return "—"; }
+        return "" + Math.floor(Math.round(mb * 10.0 / 1024.0) / 10.0) + "." + Math.mod(Math.round(mb * 10.0 / 1024.0), 10) + " GB";
+    }
+    public pure function gb-pair(used: int, total: int) -> string {
+        if used < 0 || total <= 0 { return "—"; }
+        return "" + Math.floor(Math.round(used * 10.0 / 1024.0) / 10.0) + "." + Math.mod(Math.round(used * 10.0 / 1024.0), 10)
+            + " / " + Math.floor(Math.round(total * 10.0 / 1024.0) / 10.0) + "." + Math.mod(Math.round(total * 10.0 / 1024.0), 10) + " GB";
+    }
+    public pure function effect-name(e: int) -> string {
+        if e == 1 { return "呼吸"; }
+        if e == 2 { return "色彩循环"; }
+        if e == 3 { return "波浪"; }
+        return "常亮";
+    }
+    public pure function speed-name(s: int) -> string {
+        if s == 0 { return "慢"; }
+        if s == 2 { return "快"; }
+        return "中";
+    }
 
     public pure function temp-level(t: int) -> int {
         if t < 0 { return 0; }
@@ -149,6 +179,7 @@ export global AppState {
     in-out property <bool> cap-keyboard: false;
     in-out property <bool> cap-mux: false;
     in-out property <bool> cap-telemetry: false;
+    in-out property <bool> cap-gpu-oc: false;
     in-out property <int> ec-write-status: 0;
     in-out property <bool> ec-writable: false;
 
@@ -160,7 +191,29 @@ export global AppState {
     in-out property <int> cpu-duty: -1;
     in-out property <int> gpu-duty: -1;
     in-out property <int> gpu-power-mw: -1;
+    in-out property <int> gpu-power-limit-mw: -1;
+    in-out property <int> cpu-util: -1;
+    in-out property <int> mem-used-mb: -1;
+    in-out property <int> mem-total-mb: -1;
+    in-out property <int> gpu-util: -1;
+    in-out property <int> gpu-clock-mhz: -1;
+    in-out property <int> gpu-mem-clock-mhz: -1;
+    in-out property <int> gpu-vram-used-mb: -1;
+    in-out property <int> gpu-vram-total-mb: -1;
     in-out property <string> telemetry-age: "—";
+
+    // ── GPU clock offset (advanced performance) ──
+    in-out property <bool> gpu-oc-supported: false;
+    in-out property <int> gpu-oc-core: 0;
+    in-out property <int> gpu-oc-mem: 0;
+    in-out property <int> gpu-oc-core-min: 0;
+    in-out property <int> gpu-oc-core-max: 200;
+    in-out property <int> gpu-oc-mem-min: 0;
+    in-out property <int> gpu-oc-mem-max: 200;
+    in-out property <int> gpu-oc-draft-core: 0;
+    in-out property <int> gpu-oc-draft-mem: 0;
+    in-out property <bool> gpu-oc-dirty: false;
+    in-out property <bool> gpu-oc-active: false;
 
     // ── hardware ──
     in-out property <string> board-id: "—";
@@ -217,7 +270,10 @@ export global AppState {
     // ── keyboard ──
     in-out property <[color]> zones: [];
     in-out property <[bool]> zone-selected: [];
+    in-out property <int> zone-selected-count: 0;
     in-out property <int> zone-brightness: 3;
+    in-out property <int> zone-effect: 0; // 0=Static, 1=Breathing, 2=ColorCycle, 3=Wave
+    in-out property <int> zone-speed: 1;  // 0=Slow, 1=Medium, 2=Fast
     in-out property <string> zone-color-hex: "#FF1A1A";
     in-out property <float> zone-hue: 0.0;
     in-out property <float> zone-sat: 0.90;

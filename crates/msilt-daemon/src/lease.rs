@@ -2,7 +2,7 @@ use msilt_core::{
     AutomationLease, ControlChange, ControlTarget, FanChannel, HardwareState, LeaseOwner,
 };
 
-pub(crate) const TARGETS: [ControlTarget; 9] = [
+pub(crate) const TARGETS: [ControlTarget; 10] = [
     ControlTarget::PerformanceMode {},
     ControlTarget::CoolerBoost {},
     ControlTarget::FanCurve {
@@ -16,6 +16,7 @@ pub(crate) const TARGETS: [ControlTarget; 9] = [
     ControlTarget::DisplayBrightness {},
     ControlTarget::ColorProfile {},
     ControlTarget::KeyboardLighting {},
+    ControlTarget::GpuClockOffset {},
 ];
 const MAX_LEASES: usize = 8;
 
@@ -65,6 +66,9 @@ impl LeaseArbiter {
     }
 
     pub(crate) fn acquire(&mut self, lease: AutomationLease, now: u64) -> bool {
+        if matches!(lease.change, ControlChange::SetGpuClockOffset { .. }) {
+            return false;
+        }
         if lease
             .expires_at_monotonic_ms
             .is_some_and(|until| until <= now)
@@ -123,6 +127,8 @@ impl LeaseArbiter {
             if slot.baseline.is_none() {
                 slot.baseline = original;
             }
+            // OC needs explicit release/reset; timed restores must not reapply it on resume.
+            let until = if matches!(target, ControlTarget::GpuClockOffset {}) { None } else { until };
             slot.manual = Some(Manual { until });
         }
     }
@@ -244,8 +250,11 @@ impl LeaseArbiter {
     }
 
     pub(crate) fn reconcile_observation(&mut self) {
-        for slot in &mut self.slots {
-            slot.dirty |= slot.restore().is_some();
+        for (target, slot) in TARGETS.into_iter().zip(&mut self.slots) {
+            // Refresh/resume must never reapply an OC offset without an explicit request.
+            if !matches!(target, ControlTarget::GpuClockOffset {}) {
+                slot.dirty |= slot.restore().is_some();
+            }
         }
     }
 }
@@ -280,7 +289,13 @@ pub(crate) fn observed(state: &HardwareState, target: ControlTarget) -> Option<C
         },
         ControlTarget::KeyboardLighting {} => ControlChange::SetKeyboardLighting {
             zones: state.keyboard_zones?,
+            effect: state.keyboard_effect.unwrap_or_default(),
+            speed: state.keyboard_speed.unwrap_or_default(),
         },
+        ControlTarget::GpuClockOffset {} => {
+            let offset = state.gpu_clock_offset?;
+            ControlChange::SetGpuClockOffset { core_mhz: offset.core_mhz, mem_mhz: offset.mem_mhz }
+        }
         _ => return None,
     })
 }
@@ -342,5 +357,39 @@ mod tests {
         assert_eq!(arbiter.next_automatic(false), Some(hz(144)));
         assert!(arbiter.acquire(lease(10, 500, 2, 240, None), 0));
         assert_eq!(arbiter.next_automatic(false), Some(hz(240)));
+    }
+
+    #[test]
+    fn gpu_manual_target_is_observed_and_refresh_does_not_reapply_oc() {
+        let target = ControlTarget::GpuClockOffset {};
+        let reset = ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 };
+        let oc = ControlChange::SetGpuClockOffset { core_mhz: 100, mem_mhz: 200 };
+        let state = HardwareState {
+            gpu_clock_offset: Some(msilt_core::GpuClockOffsetState {
+                core_mhz: 100, mem_mhz: 200,
+                core_min_mhz: 0, core_max_mhz: 200, mem_min_mhz: 0, mem_max_mhz: 200,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(observed(&state, target), Some(oc.clone()));
+        assert_eq!(observed(&HardwareState::default(), target), None);
+        let mut arbiter = LeaseArbiter::default();
+        arbiter.manual_applied(target, Some(reset.clone()), Some(100));
+        assert_eq!(arbiter.manual_targets().collect::<Vec<_>>(), [target]);
+        assert_eq!(arbiter.manual_destination(target), Some(reset.clone()));
+        arbiter.expire(100, true);
+        assert!(arbiter.has_manual(target));
+        assert_eq!(arbiter.next_deadline(true), None);
+        assert!(!arbiter.acquire(AutomationLease {
+            owner: LeaseOwner::Rule(1), change: oc.clone(), priority: 100, specificity: 1,
+            expires_at_monotonic_ms: None,
+        }, 100));
+        arbiter.reconcile_observation();
+        assert_eq!(arbiter.next_automatic(false), None);
+        arbiter.release_manual(target, Some(&reset));
+        assert!(!arbiter.has_manual(target));
+        arbiter.auto_applied(&reset, Some(oc));
+        arbiter.reconcile_observation();
+        assert_eq!(arbiter.next_automatic(false), None);
     }
 }

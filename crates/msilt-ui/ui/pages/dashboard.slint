@@ -1,5 +1,5 @@
-// Page 0: Dashboard — responsive 2/3-column horizontal control grid +
-// clamped temperature trend card + tightly-docked telemetry strip.
+// Page 0: Dashboard — responsive quick controls + whole-machine status grid
+// (CPU / GPU / Memory & Power / Display & Policy) + temperature trend card.
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
@@ -9,9 +9,10 @@ import { FluentButton } from "../components/fluent_button.slint";
 import { FluentToggle } from "../components/fluent_toggle.slint";
 import { SettingsGroup } from "../components/settings_group.slint";
 import { Sparkline } from "../components/sparkline.slint";
+import { Icon } from "../icons.slint";
 
 component BrightnessControlCard inherits Rectangle {
-    height: 68px;
+    height: 66px;
     horizontal-stretch: 1;
     background: transparent;
 
@@ -46,7 +47,7 @@ component BrightnessControlCard inherits Rectangle {
 
 component DashboardControl inherits Rectangle {
     in property <int> kind;
-    height: 68px;
+    height: 66px;
     horizontal-stretch: 1;
 
     if kind == 0 : CompactCard {
@@ -97,13 +98,76 @@ component DashboardControl inherits Rectangle {
     if kind == 5 : CompactCard {
         glyph: "keyboard";
         title: "键盘灯效";
-        subtitle: AppState.keyboard-conflict ? "被 MSI 软件占用" : "24 区背光";
+        subtitle: AppState.keyboard-conflict
+            ? "被 MSI 软件占用"
+            : ("24 区 · " + Fmt.effect-name(AppState.zone-effect));
         accent-border: AppState.keyboard-conflict ? Theme.danger : transparent;
         FluentButton {
             text: "编辑";
             variant: 0;
             width: 88px;
             clicked => { AppState.command(10, 4, 0); }
+        }
+    }
+}
+
+component SystemStatusTile inherits Rectangle {
+    in property <string> glyph: "pulse";
+    in property <string> label: "";
+    in property <string> primary: "—";
+    in property <string> secondary: "";
+    in property <color> accent: Theme.text-2;
+
+    height: 62px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    background: Theme.card;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon { glyph: root.glyph; size: 17px; tint: root.accent; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.label;
+                    font-size: Theme.font-caption;
+                    color: Theme.text-2;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.primary;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    font-family: Theme.font-mono;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.secondary;
+                font-size: Theme.font-caption;
+                font-family: Theme.font-mono;
+                color: Theme.text-3;
+                overflow: elide;
+            }
         }
     }
 }
@@ -115,8 +179,8 @@ component TelemetryCell inherits Rectangle {
     background: transparent;
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: 14px;
+        padding-right: 14px;
         spacing: 8px;
         Text {
             text: root.label;
@@ -140,11 +204,39 @@ export component DashboardPage inherits Rectangle {
     in property <length> viewport-h: 560px;
     property <int> columns: root.width >= 820px ? 3 : 2;
     property <int> rows: 6 / columns;
-    property <length> chart-h: clamp(root.viewport-h - (root.columns == 3 ? 268px : 344px), 168px, 290px);
+    property <length> chart-h: clamp(root.viewport-h - (root.columns == 3 ? 404px : 478px), 138px, 236px);
+
+    pure function mem-pct() -> string {
+        if AppState.mem-used-mb < 0 || AppState.mem-total-mb <= 0 { return ""; }
+        return " (" + Math.round(AppState.mem-used-mb * 100.0 / AppState.mem-total-mb) + "%)";
+    }
+
+    pure function gpu-subline() -> string {
+        if AppState.gpu-clock-mhz >= 0 && AppState.gpu-vram-total-mb > 0 {
+            return "占用 " + Fmt.pct(AppState.gpu-util) + " · " + Fmt.mhz(AppState.gpu-clock-mhz)
+                 + " · 显存 " + Fmt.gb-pair(AppState.gpu-vram-used-mb, AppState.gpu-vram-total-mb);
+        }
+        if AppState.gpu-rpm >= 0 {
+            return "风扇 " + Fmt.rpm(AppState.gpu-rpm) + " · 占空比 " + Fmt.pct(AppState.gpu-duty);
+        }
+        return "独显处于休眠或等待监控采样";
+    }
+
+    pure function policy-subline() -> string {
+        return Fmt.mode-name(AppState.performance-mode)
+            + " · "
+            + (AppState.cooler-boost ? "强冷全速"
+              : AppState.fan-mode == 2 ? "自定义曲线"
+              : AppState.fan-mode == 1 ? "静音风扇"
+              : AppState.fan-mode == 0 ? "自动风扇" : "策略未知")
+            + (AppState.gpu-oc-active
+                ? (" · 偏移 " + Fmt.offset-mhz(AppState.gpu-oc-core) + "/" + Fmt.offset-mhz(AppState.gpu-oc-mem))
+                : "");
+    }
 
     VerticalLayout {
         alignment: start;
-        spacing: Theme.gap-group;
+        spacing: 14px;
 
         SettingsGroup {
             title: "快捷控制";
@@ -153,8 +245,64 @@ export component DashboardPage inherits Rectangle {
                 spacing: Theme.gap;
                 for r in root.rows : HorizontalLayout {
                     spacing: Theme.gap;
-                    height: 68px;
+                    height: 66px;
                     for c in root.columns : DashboardControl { kind: r * root.columns + c; }
+                }
+            }
+        }
+
+        // Whole-machine live status (flat 2x2 grid, zero nested boxes)
+        SettingsGroup {
+            title: "整机状态";
+
+            VerticalLayout {
+                spacing: Theme.gap;
+
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    height: 62px;
+
+                    SystemStatusTile {
+                        glyph: "gauge";
+                        label: "处理器 CPU";
+                        accent: Theme.accent;
+                        primary: Fmt.celsius(AppState.cpu-temp)
+                            + (AppState.cpu-util >= 0 ? (" · " + Fmt.pct(AppState.cpu-util)) : "");
+                        secondary: "风扇 " + Fmt.rpm(AppState.cpu-rpm) + " · 占空比 " + Fmt.pct(AppState.cpu-duty);
+                    }
+
+                    SystemStatusTile {
+                        glyph: "pulse";
+                        label: "独立显卡 GPU";
+                        accent: Theme.warn;
+                        primary: Fmt.celsius(AppState.gpu-temp)
+                            + (AppState.gpu-power-mw >= 0 ? (" · " + Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw)) : "");
+                        secondary: root.gpu-subline();
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.gap;
+                    height: 62px;
+
+                    SystemStatusTile {
+                        glyph: "battery";
+                        label: "内存与供电";
+                        accent: Theme.ok;
+                        primary: Fmt.gb-pair(AppState.mem-used-mb, AppState.mem-total-mb) + root.mem-pct();
+                        secondary: (AppState.power-source == 0 ? "交流电" : AppState.power-source == 1 ? "电池" : "供电未知")
+                            + " · 电量 " + Fmt.pct(AppState.battery-percent)
+                            + (AppState.charge-limit >= 0 ? (" · 上限 " + Fmt.pct(AppState.charge-limit)) : "")
+                            + (AppState.battery-rate != "—" ? (" · " + AppState.battery-rate) : "");
+                    }
+
+                    SystemStatusTile {
+                        glyph: "display";
+                        label: "显示与策略";
+                        accent: Theme.text-2;
+                        primary: Fmt.mux-name(AppState.mux-current) + " · " + Fmt.hz(AppState.refresh-hz);
+                        secondary: root.policy-subline();
+                    }
                 }
             }
         }
@@ -214,7 +362,7 @@ export component DashboardPage inherits Rectangle {
                 }
 
                 Rectangle {
-                    height: 48px;
+                    height: 44px;
                     background: Theme.card;
                     border-radius: Theme.radius-card;
                     border-width: 1px;
@@ -223,11 +371,11 @@ export component DashboardPage inherits Rectangle {
                     HorizontalLayout {
                         spacing: 0px;
                         TelemetryCell { label: "CPU 风扇"; value: Fmt.rpm(AppState.cpu-rpm); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
                         TelemetryCell { label: "GPU 风扇"; value: Fmt.rpm(AppState.gpu-rpm); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
-                        TelemetryCell { label: "GPU 功耗"; value: Fmt.watts(AppState.gpu-power-mw); }
-                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: Theme.divider; } }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
+                        TelemetryCell { label: "GPU 功耗"; value: Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw); }
+                        VerticalLayout { alignment: center; Rectangle { width: 1px; height: 20px; background: Theme.divider; } }
                         TelemetryCell { label: "手动锁定"; value: "" + AppState.override-count + " 项"; }
                     }
                 }

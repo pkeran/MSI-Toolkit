@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -115,7 +115,8 @@ impl HalBackends {
             let capability = target.capability().bits();
             if (controls & allowed & capability) != 0
                 && observed(&report.state, target)
-                    .is_some_and(|value| value.validate_against(&report.state).is_ok())
+                    .is_some_and(|value| matches!(value, ControlChange::SetGpuClockOffset { .. })
+                        || value.validate_against(&report.state).is_ok())
             {
                 writable |= capability;
             }
@@ -403,8 +404,13 @@ impl HalBackends {
             ControlChange::SetColorProfile { profile_id } => {
                 self.device.set_color_profile(profile_id)?
             }
-            ControlChange::SetKeyboardLighting { zones } => {
-                self.device.set_keyboard_lighting(zones)?
+            ControlChange::SetKeyboardLighting { zones, effect, speed } => {
+                self.device.set_keyboard_lighting(zones, *effect, *speed)?
+            }
+            ControlChange::SetGpuClockOffset { core_mhz, mem_mhz } => {
+                if self.device.set_gpu_clock_offset(*core_mhz, *mem_mhz)? != (*core_mhz, *mem_mhz) {
+                    return Err(ErrorCode::VerificationFailed);
+                }
             }
             _ => return Err(ErrorCode::Unsupported),
         }
@@ -780,7 +786,8 @@ const EC_BITS: u32 = CapabilityFlags::PERFORMANCE_MODE.bits()
 const PLATFORM_BITS: u32 = CapabilityFlags::DISPLAY_REFRESH_RATE.bits()
     | CapabilityFlags::DISPLAY_BRIGHTNESS.bits()
     | CapabilityFlags::COLOR_PROFILE.bits()
-    | CapabilityFlags::KEYBOARD_LIGHTING.bits();
+    | CapabilityFlags::KEYBOARD_LIGHTING.bits()
+    | CapabilityFlags::GPU_CLOCK_OFFSET.bits();
 
 pub(crate) fn is_ec(target: ControlTarget) -> bool {
     target.capability().bits() & EC_BITS != 0
@@ -816,8 +823,16 @@ pub(crate) fn validate(
         return Err(ErrorCode::Unsupported);
     }
     change.validate_against(state)?;
+    if matches!(change, ControlChange::SetGpuClockOffset { core_mhz, mem_mhz } if *core_mhz != 0 || *mem_mhz != 0)
+        && state.power_source != Some(PowerSource::Ac)
+    {
+        return Err(ErrorCode::ConflictDetected);
+    }
     let baseline = observed(state, change.target()).ok_or(ErrorCode::Unsupported)?;
-    baseline.validate_against(state)?;
+    // External OC tools can leave an offset outside the MSI envelope; a reset must remain usable.
+    if !matches!(change, ControlChange::SetGpuClockOffset { .. }) {
+        baseline.validate_against(state)?;
+    }
     if matches!(change, ControlChange::SetFanCurve { .. })
         && (state.cooler_boost == Some(true)
             || state.performance_mode == Some(PerformanceMode::Silent))
@@ -920,7 +935,7 @@ impl PlatformControl for Noop {
     fn set_color_profile(&mut self, _: &str) -> HalResult<()> {
         Err(HalError::Unsupported)
     }
-    fn set_keyboard_lighting(&mut self, _: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+    fn set_keyboard_lighting(&mut self, _: &[Rgb8; KEYBOARD_ZONE_COUNT], _: KeyboardEffect, _: KeyboardSpeed) -> HalResult<()> {
         Err(HalError::Unsupported)
     }
 }
@@ -1032,6 +1047,7 @@ pub(crate) enum Work {
         expected: HardwareIdentity,
     },
     Sample,
+    SetGpuTelemetry(bool),
     SystemTools {
         task: SystemTask,
         backup: PathBuf,
@@ -1110,6 +1126,12 @@ struct Job {
     budget_by: Instant,
 }
 
+#[derive(Default)]
+struct GpuTelemetrySetting {
+    enabled: AtomicBool,
+    queued: AtomicBool,
+}
+
 pub(crate) struct Executor {
     factory: Option<Box<dyn FnOnce() -> HalBackends + Send>>,
     sender: Option<SyncSender<Job>>,
@@ -1118,6 +1140,7 @@ pub(crate) struct Executor {
     thread: Option<JoinHandle<()>>,
     port: Port,
     inbox: Arc<Inbox>,
+    gpu_telemetry: Arc<GpuTelemetrySetting>,
 }
 
 impl Executor {
@@ -1135,6 +1158,7 @@ impl Executor {
             thread: None,
             port: port.clone(),
             inbox,
+            gpu_telemetry: Arc::default(),
         }
     }
 
@@ -1155,13 +1179,15 @@ impl Executor {
                 .ok_or_else(|| io::Error::other("HAL completion channel unavailable"))?;
             let port = self.port.clone();
             let inbox = self.inbox.clone();
-            let (sender, jobs) = sync_channel::<Job>(1);
+            let gpu_telemetry = self.gpu_telemetry.clone();
+            // One hardware job plus one coalesced telemetry-setting wakeup.
+            let (sender, jobs) = sync_channel::<Job>(2);
             self.thread = Some(
                 thread::Builder::new()
                     .name("msilt-hal".into())
                     .stack_size(512 * 1024)
                     .spawn(move || {
-                        let mut backend = None;
+                        let mut backend: Option<HalBackends> = None;
                         let mut factory = Some(factory);
                         while let Ok(Job {
                             work,
@@ -1170,6 +1196,16 @@ impl Executor {
                             budget_by,
                         }) = jobs.recv()
                         {
+                            if let Work::SetGpuTelemetry(_requested) = work {
+                                gpu_telemetry.queued.store(false, Ordering::Release);
+                                if let Some(backend) = &mut backend {
+                                    backend.device.set_gpu_telemetry(gpu_telemetry.enabled.load(Ordering::Acquire));
+                                }
+                                continue;
+                            }
+                            if let Some(backend) = &mut backend {
+                                backend.device.set_gpu_telemetry(gpu_telemetry.enabled.load(Ordering::Acquire));
+                            }
                             let completion = if queue_by.is_some_and(|by| Instant::now() >= by)
                                 || !ticket.start()
                             {
@@ -1180,6 +1216,7 @@ impl Executor {
                                 let backend = backend.get_or_insert_with(|| {
                                     factory.take().expect("fresh HAL factory")()
                                 });
+                                backend.device.set_gpu_telemetry(gpu_telemetry.enabled.load(Ordering::Acquire));
                                 match work {
                                     Work::Inspect { topology } => {
                                         let result = backend.inspect();
@@ -1218,6 +1255,7 @@ impl Executor {
                                     Work::Sample => {
                                         Completion::Sample(backend.device.sample_telemetry())
                                     }
+                                    Work::SetGpuTelemetry(_) => unreachable!(),
                                     Work::SystemTools { task, backup } => {
                                         let result = if task.mutates() && backend.readonly {
                                             Err(ErrorCode::WriteNotAllowed)
@@ -1232,6 +1270,9 @@ impl Executor {
                                     }
                                 }
                             };
+                            if let Some(backend) = &mut backend {
+                                backend.device.set_gpu_telemetry(gpu_telemetry.enabled.load(Ordering::Acquire));
+                            }
                             if result.try_send(completion).is_err() || port.post(WAKE_HAL).is_err()
                             {
                                 break;
@@ -1257,6 +1298,23 @@ impl Executor {
 
     pub(crate) fn completion(&self) -> Option<Completion> {
         self.receiver.try_recv().ok()
+    }
+
+    pub(crate) fn set_gpu_telemetry(&mut self, enabled: bool) {
+        self.gpu_telemetry.enabled.store(enabled, Ordering::Release);
+        let Some(sender) = &self.sender else { return; };
+        if self.gpu_telemetry.queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let now = Instant::now();
+        if sender.try_send(Job {
+            work: Work::SetGpuTelemetry(enabled),
+            ticket: Arc::new(Ticket::new()),
+            queue_by: None,
+            budget_by: now,
+        }).is_err() {
+            self.gpu_telemetry.queued.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -1382,6 +1440,124 @@ mod tests {
         }
     }
 
+    fn gpu_state() -> HardwareState {
+        HardwareState {
+            identity: identity(),
+            power_source: Some(PowerSource::Ac),
+            gpu_clock_offset: Some(GpuClockOffsetState {
+                core_mhz: 0, mem_mhz: 0,
+                core_min_mhz: 0, core_max_mhz: 200,
+                mem_min_mhz: 0, mem_max_mhz: 200,
+            }),
+            ..Default::default()
+        }
+    }
+
+    struct TestGpu {
+        state: HardwareState,
+        writes: Rc<Cell<u16>>,
+        reply: Option<(i16, i16)>,
+        acknowledge_only: bool,
+    }
+
+    impl HardwareRead for TestGpu {
+        fn inspect(&mut self) -> HalResult<HardwareReport> {
+            Ok(HardwareReport {
+                readable: CapabilityFlags::GPU_CLOCK_OFFSET,
+                controls_detected: CapabilityFlags::GPU_CLOCK_OFFSET,
+                state: self.state.clone(),
+            })
+        }
+        fn sample_telemetry(&mut self) -> HalResult<TelemetrySample> {
+            Err(HalError::Unsupported)
+        }
+    }
+
+    impl EcRegisterIo for TestGpu {
+        fn read_byte(&mut self, _: u8) -> HalResult<u8> { Err(HalError::Unsupported) }
+        fn write_byte(&mut self, _: &AuthorizedEcWrite) -> HalResult<()> { Err(HalError::Unsupported) }
+    }
+
+    impl PlatformControl for TestGpu {
+        fn set_gpu_clock_offset(&mut self, core_mhz: i16, mem_mhz: i16) -> HalResult<(i16, i16)> {
+            self.writes.set(self.writes.get() + 1);
+            if !self.acknowledge_only {
+                let offset = self.state.gpu_clock_offset.as_mut().unwrap();
+                offset.core_mhz = core_mhz;
+                offset.mem_mhz = mem_mhz;
+            }
+            Ok(self.reply.unwrap_or((core_mhz, mem_mhz)))
+        }
+        fn set_display_refresh_rate(&mut self, hz: u16) -> HalResult<u16> { Noop.set_display_refresh_rate(hz) }
+        fn set_display_brightness(&mut self, percent: u8) -> HalResult<u8> { Noop.set_display_brightness(percent) }
+        fn set_color_profile(&mut self, id: &str) -> HalResult<()> { Noop.set_color_profile(id) }
+        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT], e: KeyboardEffect, s: KeyboardSpeed) -> HalResult<()> { Noop.set_keyboard_lighting(zones, e, s) }
+    }
+
+    #[test]
+    fn gpu_nonzero_requires_ac_and_reset_remains_allowed_on_battery_or_unknown_power() {
+        let flag = CapabilityFlags::GPU_CLOCK_OFFSET;
+        let mut state = gpu_state();
+        for source in [None, Some(PowerSource::Battery)] {
+            state.power_source = source;
+            for (core_mhz, mem_mhz) in [(1, 0), (0, 1), (200, 200)] {
+                assert_eq!(validate(&state, flag, EcWriteStatus::Unavailable,
+                    &ControlChange::SetGpuClockOffset { core_mhz, mem_mhz }), Err(ErrorCode::ConflictDetected));
+            }
+            assert_eq!(validate(&state, flag, EcWriteStatus::Unavailable,
+                &ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 }), Ok(()));
+        }
+        state.power_source = Some(PowerSource::Ac);
+        assert_eq!(validate(&state, flag, EcWriteStatus::Unavailable,
+            &ControlChange::SetGpuClockOffset { core_mhz: 200, mem_mhz: 200 }), Ok(()));
+        let offset = state.gpu_clock_offset.as_mut().unwrap();
+        offset.core_mhz = -50;
+        offset.mem_mhz = 600;
+        state.power_source = Some(PowerSource::Battery);
+        assert_eq!(validate(&state, flag, EcWriteStatus::Unavailable,
+            &ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 }), Ok(()));
+    }
+
+    #[test]
+    fn gpu_apply_verifies_the_returned_pair_and_fresh_hardware_state() {
+        let flag = CapabilityFlags::GPU_CLOCK_OFFSET;
+        let change = ControlChange::SetGpuClockOffset { core_mhz: 100, mem_mhz: 200 };
+        for (reply, acknowledge_only, expected) in [
+            (None, false, Ok(())),
+            (Some((99, 200)), false, Err(ErrorCode::VerificationFailed)),
+            (Some((100, 199)), false, Err(ErrorCode::VerificationFailed)),
+            (None, true, Err(ErrorCode::VerificationFailed)),
+        ] {
+            let writes = Rc::new(Cell::new(0));
+            let mut backend = HalBackends::new(TestGpu { state: gpu_state(), writes: writes.clone(), reply, acknowledge_only }, flag);
+            let applied = backend.apply(&change, &identity(), || true);
+            assert_eq!(applied.result, expected);
+            assert_eq!(writes.get(), 1);
+            if expected.is_ok() {
+                assert_eq!(applied.before, Some(ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 }));
+                assert_eq!(observed(&applied.observation.unwrap().report.state, change.target()), Some(change.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_apply_blocks_invalid_values_and_power_conflicts_before_writing() {
+        let flag = CapabilityFlags::GPU_CLOCK_OFFSET;
+        let writes = Rc::new(Cell::new(0));
+        let mut state = gpu_state();
+        state.power_source = Some(PowerSource::Battery);
+        state.gpu_clock_offset.as_mut().unwrap().core_mhz = 600;
+        let mut backend = HalBackends::new(TestGpu { state, writes: writes.clone(), reply: None, acknowledge_only: false }, flag);
+        assert_eq!(backend.apply(&ControlChange::SetGpuClockOffset { core_mhz: 1, mem_mhz: 0 }, &identity(), || true).result, Err(ErrorCode::ConflictDetected));
+        assert_eq!(backend.apply(&ControlChange::SetGpuClockOffset { core_mhz: 201, mem_mhz: 0 }, &identity(), || true).result, Err(ErrorCode::Unsupported));
+        assert_eq!(writes.get(), 0);
+        let reset = ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 };
+        assert_eq!(backend.apply(&reset, &identity(), || false).result, Err(ErrorCode::NotReady));
+        assert_eq!(writes.get(), 0);
+        assert_eq!(backend.apply(&reset, &identity(), || true).result, Ok(()));
+        assert_eq!(writes.get(), 1);
+    }
+
     struct TestEc {
         byte: u8,
         writes: Rc<Cell<u16>>,
@@ -1427,8 +1603,8 @@ mod tests {
         fn set_color_profile(&mut self, id: &str) -> HalResult<()> {
             Noop.set_color_profile(id)
         }
-        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
-            Noop.set_keyboard_lighting(zones)
+        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT], e: KeyboardEffect, s: KeyboardSpeed) -> HalResult<()> {
+            Noop.set_keyboard_lighting(zones, e, s)
         }
     }
 
@@ -1723,8 +1899,8 @@ mod tests {
         fn set_color_profile(&mut self, id: &str) -> HalResult<()> {
             Noop.set_color_profile(id)
         }
-        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
-            Noop.set_keyboard_lighting(zones)
+        fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT], e: KeyboardEffect, s: KeyboardSpeed) -> HalResult<()> {
+            Noop.set_keyboard_lighting(zones, e, s)
         }
     }
 

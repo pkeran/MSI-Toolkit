@@ -283,7 +283,7 @@ pub(crate) fn is_lock_screen_preset(rule: &AutomationRule) -> bool {
 }
 
 pub(crate) fn dark_keyboard(change: &ControlChange) -> bool {
-    matches!(change, ControlChange::SetKeyboardLighting { zones } if zones.iter().all(|rgb| rgb.r == 0 && rgb.g == 0 && rgb.b == 0))
+    matches!(change, ControlChange::SetKeyboardLighting { zones, .. } if zones.iter().all(|rgb| rgb.r == 0 && rgb.g == 0 && rgb.b == 0))
 }
 
 pub(crate) fn preset(preset: AutomationPreset) -> (&'static str, String) {
@@ -570,7 +570,7 @@ fn action(out: &mut String, change: &ControlChange) -> fmt::Result {
             })?;
             write!(out, "}}")
         }
-        SetKeyboardLighting { zones } => {
+        SetKeyboardLighting { zones, .. } => {
             write!(out, "{{field = \"keyboardLighting\", zones = ")?;
             array(out, zones.iter(), |out, rgb| {
                 write!(out, "{{r = {}, g = {}, b = {}}}", rgb.r, rgb.g, rgb.b)

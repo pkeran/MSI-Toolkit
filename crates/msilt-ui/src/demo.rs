@@ -4,10 +4,11 @@
 
 use msilt_core::{
     AutomationRuleView, BatteryDetail, CapabilityFlags, DaemonStatus, EcWriteStatus, FanCurve,
-    FanCurveLimits, FanMode, FanPoint, FanState, GpuMuxMode, GpuMuxState, HardwareIdentity,
-    HardwareState, OemInventory, OemItemKind, OemItemStatus, OemPackageId, OemPackageStatus,
-    OemProcessStatus, OemScope, PerformanceMode, PowerSource, Rgb8, StartupMode, StartupStatus,
-    SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT,
+    FanCurveLimits, FanMode, FanPoint, FanState, GpuClockOffsetState, GpuMuxMode, GpuMuxState,
+    HardwareIdentity, HardwareState, KeyboardEffect, KeyboardSpeed, OemInventory, OemItemKind,
+    OemItemStatus, OemPackageId, OemPackageStatus, OemProcessStatus, OemScope, PerformanceMode,
+    PowerSource, Rgb8, StartupMode, StartupStatus, SystemSnapshot, TelemetrySample,
+    KEYBOARD_ZONE_COUNT,
 };
 
 pub const CPU_TEMPS: [u8; 6] = [0, 48, 56, 62, 70, 78];
@@ -42,16 +43,14 @@ fn fan(temps: [u8; 6], duties: [u8; 6]) -> FanState {
 }
 
 fn zones() -> [Rgb8; KEYBOARD_ZONE_COUNT] {
-    // Wootility v5 matte editorial keycap palette: slate-gray alpha, sage modifiers, brick right-zone, ochre Enter
-    let slate = Rgb8 { r: 0x7A, g: 0x7D, b: 0x84 };
-    let sage  = Rgb8 { r: 0x45, g: 0x85, b: 0x62 };
-    let brick = Rgb8 { r: 0x8E, g: 0x35, b: 0x30 };
-    let ochre = Rgb8 { r: 0x9C, g: 0x83, b: 0x38 };
-    let mut out = [slate; KEYBOARD_ZONE_COUNT];
-    for i in [6, 12, 18, 22] { out[i] = sage; }
-    for i in [3, 9, 15, 21] { out[i] = brick; }
-    for i in [16] { out[i] = ochre; }
-    for i in [5, 11, 17, 23] { out[i] = sage; }
+    // Showcase real MS-1603 24-zone physical layout:
+    // top Z1..Z11 (0..10) + bottom Z12..Z24 (11..23), highlighting dedicated WASD (12, 13, 14) in ice blue.
+    let crimson = Rgb8 { r: 0xE6, g: 0x20, b: 0x28 };
+    let ice = Rgb8 { r: 0x35, g: 0xC8, b: 0xFF };
+    let amber = Rgb8 { r: 0xF0, g: 0xB4, b: 0x29 };
+    let mut out = [crimson; KEYBOARD_ZONE_COUNT];
+    for i in [1, 12, 13, 14] { out[i] = ice; }
+    for i in [8, 9, 10, 21, 22, 23] { out[i] = amber; }
     out
 }
 
@@ -68,6 +67,7 @@ fn all_controls() -> CapabilityFlags {
         | CapabilityFlags::TELEMETRY
         | CapabilityFlags::OSD
         | CapabilityFlags::AUTOMATION
+        | CapabilityFlags::GPU_CLOCK_OFFSET
 }
 
 pub fn snapshot() -> SystemSnapshot {
@@ -107,7 +107,17 @@ pub fn snapshot() -> SystemSnapshot {
                 "TrueColor_DisplayP3".into(),
             ],
             keyboard_zones: Some(zones()),
-            gpu_mux: Some(GpuMuxState { current: GpuMuxMode::Hybrid, pending: None }),
+            keyboard_effect: Some(KeyboardEffect::Static),
+            keyboard_speed: Some(KeyboardSpeed::Medium),
+            gpu_mux: Some(GpuMuxState { current: GpuMuxMode::Discrete, pending: None }),
+            gpu_clock_offset: Some(GpuClockOffsetState {
+                core_mhz: 0,
+                mem_mhz: 0,
+                core_min_mhz: 0,
+                core_max_mhz: 200,
+                mem_min_mhz: 0,
+                mem_max_mhz: 200,
+            }),
             battery_detail: Some(BatteryDetail {
                 designed_capacity_mwh: Some(87_395),
                 full_charged_capacity_mwh: Some(87_195),
@@ -276,5 +286,14 @@ pub fn telemetry(tick: u64, now_unix_ms: u64) -> TelemetrySample {
         cpu_reported_duty_percent: Some(cpu_duty),
         gpu_reported_duty_percent: Some(gpu_duty),
         gpu_power_mw: Some((82_000 + tri(tick, 71, 18_000)).clamp(0, 175_000) as u32),
+        cpu_utilization_percent: Some((26 + tri(tick, 37, 14)).clamp(1, 100) as u8),
+        memory_used_mb: Some(18_420),
+        memory_total_mb: Some(65_536),
+        gpu_utilization_percent: Some((44 + tri(tick, 43, 22)).clamp(0, 100) as u8),
+        gpu_clock_mhz: Some((1860 + tri(tick, 59, 240)).clamp(210, 2600) as u16),
+        gpu_mem_clock_mhz: Some(14_001),
+        gpu_vram_used_mb: Some(4_320),
+        gpu_vram_total_mb: Some(24_463),
+        gpu_power_limit_mw: Some(175_000),
     }
 }

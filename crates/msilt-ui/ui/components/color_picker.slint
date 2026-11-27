@@ -30,8 +30,8 @@ export component ColorPicker inherits Rectangle {
     horizontal-stretch: 1;
 
     VerticalLayout {
-        padding: 14px;
-        spacing: 10px;
+        padding: 12px;
+        spacing: 8px;
 
         // Top compact header: title + live swatch preview + hex tag
         HorizontalLayout {
@@ -70,7 +70,7 @@ export component ColorPicker inherits Rectangle {
 
         // 2D Saturation (X) x Value (Y) interactive gradient pad
         sv-pad := Rectangle {
-            min-height: 112px;
+            min-height: 92px;
             vertical-stretch: 1;
             border-radius: Theme.radius-sm;
             clip: true;

@@ -30,8 +30,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use msilt_core::{
     AutomationPreset, AutomationRuleView, ControlChange, FanChannel, IpcCommand, IpcEvent,
-    IpcMessage, IpcReply, IpcResult, OemAction, OemInventory, OemPackageId, OemScope,
-    StartupStatus, SystemSnapshot, TelemetrySample, FAN_POINT_COUNT, KEYBOARD_ZONE_COUNT,
+    IpcMessage, IpcReply, IpcResult, KeyboardEffect, KeyboardSpeed, OemAction, OemInventory,
+    OemPackageId, OemScope, StartupStatus, SystemSnapshot, TelemetrySample, FAN_POINT_COUNT,
+    KEYBOARD_ZONE_COUNT,
 };
 use slint::{Color, SharedString, Timer, TimerMode};
 
@@ -58,11 +59,17 @@ mod cmd {
     pub const CURVE_RESET: i32 = 32;
     pub const CURVE_PRESET: i32 = 33;
     pub const FAN_AUTO: i32 = 34;
+    pub const GPU_OC_CORE: i32 = 35;
+    pub const GPU_OC_MEM: i32 = 36;
+    pub const GPU_OC_APPLY: i32 = 37;
+    pub const GPU_OC_RESET: i32 = 38;
     pub const ZONE_APPLY: i32 = 41;
     pub const ZONE_PRESET: i32 = 42;
     pub const ZONE_SELECT: i32 = 43;
     pub const ZONE_BRIGHTNESS: i32 = 44;
     pub const ZONE_COLOR: i32 = 45;
+    pub const ZONE_EFFECT: i32 = 46;
+    pub const ZONE_SPEED: i32 = 47;
     pub const RULE_TOGGLE: i32 = 50;
     pub const DRY_RUN: i32 = 51;
     pub const ENGINE: i32 = 52;
@@ -122,6 +129,8 @@ struct App {
     snapshot: SystemSnapshot,
     curves: [CurveEditor; 2],
     zones: ZoneEditor,
+    gpu_oc_draft: (i16, i16),
+    gpu_oc_dirty: bool,
     history: History,
     demo: bool,
     ipc: Option<IpcClient>,
@@ -222,6 +231,7 @@ impl App {
         view::apply_curves(&state, &self.curves);
         view::apply_curve_flags(&state, &self.curves, self.curve_channel());
         view::apply_zones(&state, &self.zones, self.dark);
+        self.push_gpu_oc_draft(&state);
         if state.get_page() == 6 {
             view::apply_history(&state, &self.history);
         } else if state.get_page() == 0 {
@@ -342,6 +352,24 @@ impl App {
         self.push_toast();
     }
 
+    fn push_gpu_oc_draft(&self, state: &AppState<'_>) {
+        state.set_gpu_oc_draft_core(i32::from(self.gpu_oc_draft.0));
+        state.set_gpu_oc_draft_mem(i32::from(self.gpu_oc_draft.1));
+        state.set_gpu_oc_dirty(self.gpu_oc_dirty);
+    }
+
+    fn sync_gpu_oc_from_snapshot(&mut self, force: bool) {
+        if let Some(oc) = self.snapshot.hardware.gpu_clock_offset {
+            if force || !self.gpu_oc_dirty {
+                self.gpu_oc_draft = (oc.core_mhz, oc.mem_mhz);
+                self.gpu_oc_dirty = false;
+            }
+        } else {
+            self.gpu_oc_draft = (0, 0);
+            self.gpu_oc_dirty = false;
+        }
+    }
+
     fn curve_channel(&self) -> usize {
         self.ui
             .upgrade()
@@ -402,6 +430,7 @@ impl App {
         if !keep_gpu {
             self.curves[1] = fresh[1].clone();
         }
+        self.sync_gpu_oc_from_snapshot(false);
         self.connected = true;
         if recovered {
             self.transient(3, "硬件控制已恢复", String::new());
@@ -442,7 +471,11 @@ impl App {
         if !self.connected || self.demo { return; }
         let Some(ui) = self.ui.upgrade() else { return; };
         let state = ui.global::<AppState>();
-        let desired = subscriptions::for_page(state.get_page(), state.get_monitor_paused());
+        let desired = subscriptions::for_page(
+            state.get_page(),
+            state.get_monitor_paused(),
+            state.get_gpu_telemetry(),
+        );
         if let Some(topics) = self.subscriptions.next(desired) {
             if let Some(ipc) = self.ipc.as_ref() {
                 if let Err(error) = ipc.send(IpcCommand::SetSubscriptions { topics }) {
@@ -579,8 +612,69 @@ impl App {
                 self.submit_fan_reset();
                 return;
             }
+            cmd::GPU_OC_CORE => {
+                let (min, max) = self
+                    .snapshot
+                    .hardware
+                    .gpu_clock_offset
+                    .map_or((0, 200), |o| (o.core_min_mhz, o.core_max_mhz));
+                let next = a.clamp(i32::from(min), i32::from(max)) as i16;
+                self.gpu_oc_draft.0 = next;
+                let cur = self.snapshot.hardware.gpu_clock_offset.map_or((0, 0), |o| (o.core_mhz, o.mem_mhz));
+                self.gpu_oc_dirty = self.gpu_oc_draft != cur;
+                if let Some(ui) = self.ui.upgrade() {
+                    self.push_gpu_oc_draft(&ui.global::<AppState>());
+                }
+                return;
+            }
+            cmd::GPU_OC_MEM => {
+                let (min, max) = self
+                    .snapshot
+                    .hardware
+                    .gpu_clock_offset
+                    .map_or((0, 200), |o| (o.mem_min_mhz, o.mem_max_mhz));
+                let next = a.clamp(i32::from(min), i32::from(max)) as i16;
+                self.gpu_oc_draft.1 = next;
+                let cur = self.snapshot.hardware.gpu_clock_offset.map_or((0, 0), |o| (o.core_mhz, o.mem_mhz));
+                self.gpu_oc_dirty = self.gpu_oc_draft != cur;
+                if let Some(ui) = self.ui.upgrade() {
+                    self.push_gpu_oc_draft(&ui.global::<AppState>());
+                }
+                return;
+            }
+            cmd::GPU_OC_APPLY => {
+                let (core_mhz, mem_mhz) = self.gpu_oc_draft;
+                if self.demo {
+                    if let Some(oc) = self.snapshot.hardware.gpu_clock_offset.as_mut() {
+                        oc.core_mhz = core_mhz;
+                        oc.mem_mhz = mem_mhz;
+                    }
+                    self.gpu_oc_dirty = false;
+                    self.transient(4, "演示模式", format!("演示预览：核心 +{core_mhz} MHz / 显存 +{mem_mhz} MHz。"));
+                    self.push_all();
+                    return;
+                }
+                self.submit(ControlChange::SetGpuClockOffset { core_mhz, mem_mhz });
+                return;
+            }
+            cmd::GPU_OC_RESET => {
+                self.gpu_oc_draft = (0, 0);
+                if self.demo {
+                    if let Some(oc) = self.snapshot.hardware.gpu_clock_offset.as_mut() {
+                        oc.core_mhz = 0;
+                        oc.mem_mhz = 0;
+                    }
+                    self.gpu_oc_dirty = false;
+                    self.transient(4, "演示模式", "演示预览：已重置显卡频率偏移为 0 MHz。".into());
+                    self.push_all();
+                    return;
+                }
+                self.gpu_oc_dirty = false;
+                self.submit(ControlChange::SetGpuClockOffset { core_mhz: 0, mem_mhz: 0 });
+                return;
+            }
             cmd::ZONE_PRESET => {
-                self.zones.apply_preset(b.clamp(0, 3) as usize);
+                self.zones.apply_preset(a.clamp(0, 3) as usize);
                 if let Some(ui) = self.ui.upgrade() {
                     view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
                 }
@@ -604,9 +698,36 @@ impl App {
                 }
                 return;
             }
+            cmd::ZONE_EFFECT => {
+                let effect = match a {
+                    1 => KeyboardEffect::Breathing,
+                    2 => KeyboardEffect::ColorCycle,
+                    3 => KeyboardEffect::Wave,
+                    _ => KeyboardEffect::Static,
+                };
+                self.zones.set_effect(effect);
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
+                return;
+            }
+            cmd::ZONE_SPEED => {
+                let speed = match a {
+                    0 => KeyboardSpeed::Slow,
+                    2 => KeyboardSpeed::Fast,
+                    _ => KeyboardSpeed::Medium,
+                };
+                self.zones.set_speed(speed);
+                if let Some(ui) = self.ui.upgrade() {
+                    view::apply_zones(&ui.global::<AppState>(), &self.zones, self.dark);
+                }
+                return;
+            }
             cmd::ZONE_APPLY => {
                 let zones = self.zones.scaled();
-                self.submit(ControlChange::SetKeyboardLighting { zones });
+                let effect = self.zones.effect();
+                let speed = self.zones.speed();
+                self.submit(ControlChange::SetKeyboardLighting { zones, effect, speed });
                 if self.demo {
                     if let Some(ui) = self.ui.upgrade() {
                         ui.global::<AppState>().set_keyboard_submit("演示模式".into());
@@ -675,14 +796,23 @@ impl App {
                 return;
             }
             cmd::GPU_TELEMETRY => {
-                if let Some(ui) = self.ui.upgrade() {
+                let next = if let Some(ui) = self.ui.upgrade() {
                     let state = ui.global::<AppState>();
-                    state.set_gpu_telemetry(!state.get_gpu_telemetry());
-                }
+                    let v = !state.get_gpu_telemetry();
+                    state.set_gpu_telemetry(v);
+                    v
+                } else {
+                    return;
+                };
+                self.sync_subscriptions();
                 self.transient(
                     4,
-                    "低功耗监控模式",
-                    "GPU 温度通过系统接口读取，不会额外唤醒独立显卡。".into(),
+                    if next { "已开启独立显卡实时监控" } else { "已关闭独立显卡按需监控" },
+                    if next {
+                        "在总览/性能/监控页显示 GPU 功耗、频率与显存；离开监控页或关闭窗口后自动卸载 NVML。".into()
+                    } else {
+                        "独显直连模式下仍自动采集；混合显卡模式下不额外唤醒独显。".into()
+                    },
                 );
                 return;
             }
@@ -1204,6 +1334,11 @@ impl App {
                     // Revision belongs to a daemon generation, not the lifetime of the UI.
                     self.snapshot = snapshot;
                     self.curves = curves_from(&self.snapshot);
+                    self.zones.sync_mode(
+                        self.snapshot.hardware.keyboard_effect,
+                        self.snapshot.hardware.keyboard_speed,
+                    );
+                    self.sync_gpu_oc_from_snapshot(true);
                     self.history = History::default();
                     self.connected = true;
                     self.sync_subscriptions();
@@ -1277,6 +1412,18 @@ impl App {
                                     ui.global::<AppState>().set_keyboard_submit("已应用".into());
                                 }
                                 self.transient(3, "键盘灯效已应用", String::new());
+                            }
+                            Some(ControlChange::SetGpuClockOffset { core_mhz, mem_mhz }) => {
+                                self.sync_gpu_oc_from_snapshot(true);
+                                if core_mhz == 0 && mem_mhz == 0 {
+                                    self.transient(3, "已重置显卡频率偏移", "核心与显存偏移已恢复默认 0 MHz。".into());
+                                } else {
+                                    self.transient(
+                                        3,
+                                        "显卡频率偏移已生效",
+                                        format!("核心 +{core_mhz} MHz · 显存 +{mem_mhz} MHz（重启后自动还原）。"),
+                                    );
+                                }
                             }
                             _ => {}
                         }
@@ -1588,7 +1735,12 @@ fn run(options: Options) -> ExitCode {
     // ── view model ──────────────────────────────────────────────────────────
     let snapshot = if demo { demo::snapshot() } else { SystemSnapshot::default() };
     let curves = curves_from(&snapshot);
-    let zones = ZoneEditor::new(snapshot.hardware.keyboard_zones.as_ref());
+    let mut zones = ZoneEditor::new(snapshot.hardware.keyboard_zones.as_ref());
+    zones.sync_mode(snapshot.hardware.keyboard_effect, snapshot.hardware.keyboard_speed);
+    let gpu_oc_draft = snapshot
+        .hardware
+        .gpu_clock_offset
+        .map_or((0, 0), |o| (o.core_mhz, o.mem_mhz));
     let report = dwm::DwmReport { dark, animations, ..dwm::DwmReport::default() };
 
     let app = App {
@@ -1596,6 +1748,8 @@ fn run(options: Options) -> ExitCode {
         snapshot,
         curves,
         zones,
+        gpu_oc_draft,
+        gpu_oc_dirty: false,
         history: History::default(),
         demo,
         ipc: None,
@@ -1693,7 +1847,7 @@ fn run(options: Options) -> ExitCode {
         with_app(|app| {
             if let Some(ui) = app.ui.upgrade() {
                 let state = ui.global::<AppState>();
-                if !subscriptions::for_page(state.get_page(), state.get_monitor_paused()).telemetry { return; }
+                if !subscriptions::for_page(state.get_page(), state.get_monitor_paused(), state.get_gpu_telemetry()).telemetry { return; }
                 app.demo_tick = app.demo_tick.wrapping_add(1);
                 let sample = demo::telemetry(app.demo_tick, unix_now_ms());
                 app.apply_telemetry(&sample);
@@ -1800,10 +1954,18 @@ fn check_layout() -> ExitCode {
         }
     }
 
-    // 3. keyboard model
+    // 3. keyboard model (multi-select left-click + exclusive right-click + effects)
     let mut zones = ZoneEditor::new(snapshot.hardware.keyboard_zones.as_ref());
     if zones.colors().len() != KEYBOARD_ZONE_COUNT {
         failures.push("键盘区数量不是 24".into());
+    }
+    if zones.selected_count() != 0 {
+        failures.push("初始选区应为空（默认全键盘）".into());
+    }
+    zones.toggle(1, true);
+    zones.toggle(12, true);
+    if zones.selected_count() != 2 || !zones.selected()[1] || !zones.selected()[12] {
+        failures.push("多选累加语义错误".into());
     }
     zones.select_all();
     if zones.selected_count() != KEYBOARD_ZONE_COUNT {
@@ -1812,6 +1974,11 @@ fn check_layout() -> ExitCode {
     zones.toggle(3, false);
     if zones.selected_count() != 1 || !zones.selected()[3] {
         failures.push("独占选择语义错误".into());
+    }
+    zones.set_effect(KeyboardEffect::Breathing);
+    zones.set_speed(KeyboardSpeed::Fast);
+    if zones.effect() != KeyboardEffect::Breathing || zones.speed() != KeyboardSpeed::Fast {
+        failures.push("灯效模式/速度状态错误".into());
     }
 
     // 4. trend geometry
@@ -1838,7 +2005,7 @@ fn check_layout() -> ExitCode {
     println!("  字体            14/13/12 px（Segoe UI Variable）· 数值 Cascadia Mono");
     println!("  页面            8 个（总览/性能与风扇/显卡与显示/电池与电源/键盘灯效/自动化/监控与提示/系统与工具）");
     println!("  风扇节点        6 × 2 通道，单行 5 节点微调栏，下限 {MAX_DUTY_REF}");
-    println!("  键盘矩阵        6 × 4 = 24 区等比缩放键盘 + 2D HSV 色盘");
+    println!("  键盘矩阵        1:1 实机 99 键 24 区等比键盘（上 11 + 下 13 区 / 多选 / 悬停预览 / 原生动态灯效）+ 2D HSV 色盘");
     println!("  渲染后端        纯 CPU 软件渲染（renderer-software + backend-winit，0 GPU 上下文）");
 
     if failures.is_empty() {

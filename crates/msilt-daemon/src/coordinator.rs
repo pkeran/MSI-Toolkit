@@ -123,6 +123,7 @@ pub(crate) fn run(
         processed_engine_deadline: None,
         started: Instant::now(),
         telemetry: Telemetry::default(),
+        gpu_telemetry_enabled: false,
         inbox,
         window_actions,
         desktop,
@@ -275,6 +276,7 @@ struct Coordinator {
     processed_engine_deadline: Option<u64>,
     started: Instant,
     telemetry: Telemetry,
+    gpu_telemetry_enabled: bool,
     inbox: Arc<Inbox>,
     window_actions: Receiver<UserEvent>,
     desktop: Option<Arc<UiSender>>,
@@ -311,6 +313,7 @@ impl Coordinator {
         let result = self.dispatch_loop();
         self.timer.set(None);
         self.telemetry.set(false, Instant::now());
+        self.executor.set_gpu_telemetry(false);
         #[cfg(test)]
         self.diagnostics
             .telemetry_armed
@@ -472,7 +475,7 @@ impl Coordinator {
                 })
             }
             IpcCommand::SetSubscriptions { topics } => {
-                if topics.validate_for(client).is_err() || topics.telemetry && !verified_ui {
+                if topics.validate_for(client).is_err() || (topics.telemetry || topics.gpu_telemetry) && !verified_ui {
                     Err(ErrorCode::Unsupported)
                 } else {
                     self.pipe.subscriptions(peer, topics);
@@ -1744,6 +1747,17 @@ impl Coordinator {
             }) = &self.flight
             {
                 ticket.cancel();
+            }
+        }
+        let discrete = self.snapshot.hardware.gpu_mux.is_some_and(|mux| mux.current == GpuMuxMode::Discrete);
+        let want_gpu_telemetry = active && (discrete || self.pipe.wants_gpu_telemetry());
+        if self.gpu_telemetry_enabled != want_gpu_telemetry {
+            self.gpu_telemetry_enabled = want_gpu_telemetry;
+            self.telemetry.generation = self.telemetry.generation.wrapping_add(1);
+            self.pipe.clear_samples();
+            self.executor.set_gpu_telemetry(want_gpu_telemetry);
+            if want_gpu_telemetry && self.snapshot.hardware.gpu_clock_offset.is_none() {
+                self.inspect_requested = true;
             }
         }
         #[cfg(test)]

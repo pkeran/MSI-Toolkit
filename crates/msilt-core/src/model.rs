@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ impl CapabilityFlags {
     pub const TELEMETRY: Self = Self(1 << 9);
     pub const OSD: Self = Self(1 << 10);
     pub const AUTOMATION: Self = Self(1 << 11);
+    pub const GPU_CLOCK_OFFSET: Self = Self(1 << 12);
 
     pub const fn from_bits_retain(bits: u32) -> Self {
         Self(bits)
@@ -115,6 +117,17 @@ pub struct GpuMuxState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GpuClockOffsetState {
+    pub core_mhz: i16,
+    pub mem_mhz: i16,
+    pub core_min_mhz: i16,
+    pub core_max_mhz: i16,
+    pub mem_min_mhz: i16,
+    pub mem_max_mhz: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum FanChannel {
     Cpu,
     Gpu,
@@ -140,6 +153,7 @@ pub enum ControlTarget {
     DisplayBrightness {},
     ColorProfile {},
     KeyboardLighting {},
+    GpuClockOffset {},
 }
 
 impl ControlTarget {
@@ -153,6 +167,7 @@ impl ControlTarget {
             Self::DisplayBrightness {} => CapabilityFlags::DISPLAY_BRIGHTNESS,
             Self::ColorProfile {} => CapabilityFlags::COLOR_PROFILE,
             Self::KeyboardLighting {} => CapabilityFlags::KEYBOARD_LIGHTING,
+            Self::GpuClockOffset {} => CapabilityFlags::GPU_CLOCK_OFFSET,
         }
     }
 }
@@ -278,6 +293,115 @@ pub struct Rgb8 {
     pub b: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyboardEffect {
+    #[default]
+    Static,
+    Breathing,
+    ColorCycle,
+    Wave,
+}
+
+impl KeyboardEffect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::Breathing => "breathing",
+            Self::ColorCycle => "colorCycle",
+            Self::Wave => "wave",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "static" => Some(Self::Static),
+            "breathing" => Some(Self::Breathing),
+            "colorCycle" => Some(Self::ColorCycle),
+            "wave" => Some(Self::Wave),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for KeyboardEffect {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyboardEffect {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = KeyboardEffect;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("keyboard effect")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                KeyboardEffect::parse(v).ok_or_else(|| E::custom("invalid keyboard effect"))
+            }
+        }
+        d.deserialize_str(V)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyboardSpeed {
+    Slow,
+    #[default]
+    Medium,
+    Fast,
+}
+
+impl KeyboardSpeed {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Slow => "slow",
+            Self::Medium => "medium",
+            Self::Fast => "fast",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "slow" => Some(Self::Slow),
+            "medium" => Some(Self::Medium),
+            "fast" => Some(Self::Fast),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for KeyboardSpeed {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyboardSpeed {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = KeyboardSpeed;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("keyboard speed")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                KeyboardSpeed::parse(v).ok_or_else(|| E::custom("invalid keyboard speed"))
+            }
+        }
+        d.deserialize_str(V)
+    }
+}
+
+fn is_default_effect(effect: &KeyboardEffect) -> bool {
+    matches!(effect, KeyboardEffect::Static)
+}
+
+fn is_default_speed(speed: &KeyboardSpeed) -> bool {
+    matches!(speed, KeyboardSpeed::Medium)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HardwareIdentity {
@@ -329,7 +453,13 @@ pub struct HardwareState {
     pub color_profile_id: Option<String>,
     pub supported_color_profiles: Vec<String>,
     pub keyboard_zones: Option<[Rgb8; KEYBOARD_ZONE_COUNT]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_effect: Option<KeyboardEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_speed: Option<KeyboardSpeed>,
     pub gpu_mux: Option<GpuMuxState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_clock_offset: Option<GpuClockOffsetState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub battery_detail: Option<BatteryDetail>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -363,6 +493,24 @@ pub struct TelemetrySample {
     pub cpu_reported_duty_percent: Option<u8>,
     pub gpu_reported_duty_percent: Option<u8>,
     pub gpu_power_mw: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_utilization_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_used_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_total_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_utilization_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_clock_mhz: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_mem_clock_mhz: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_vram_used_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_vram_total_mb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_power_limit_mw: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,7 +529,14 @@ pub enum ControlChange {
     SetDisplayRefreshRate { hz: u16 },
     SetDisplayBrightness { percent: u8 },
     SetColorProfile { profile_id: String },
-    SetKeyboardLighting { zones: [Rgb8; KEYBOARD_ZONE_COUNT] },
+    SetKeyboardLighting {
+        zones: [Rgb8; KEYBOARD_ZONE_COUNT],
+        #[serde(default, skip_serializing_if = "is_default_effect")]
+        effect: KeyboardEffect,
+        #[serde(default, skip_serializing_if = "is_default_speed")]
+        speed: KeyboardSpeed,
+    },
+    SetGpuClockOffset { core_mhz: i16, mem_mhz: i16 },
 }
 
 impl ControlChange {
@@ -395,6 +550,7 @@ impl ControlChange {
             Self::SetDisplayBrightness { .. } => ControlTarget::DisplayBrightness {},
             Self::SetColorProfile { .. } => ControlTarget::ColorProfile {},
             Self::SetKeyboardLighting { .. } => ControlTarget::KeyboardLighting {},
+            Self::SetGpuClockOffset { .. } => ControlTarget::GpuClockOffset {},
         }
     }
 
@@ -413,6 +569,14 @@ impl ControlChange {
             }
             Self::SetDisplayRefreshRate { hz } if *hz == 0 => {
                 return Err(ControlError::InvalidField("hz"));
+            }
+            Self::SetGpuClockOffset { core_mhz, mem_mhz } => {
+                if !(-1000..=1000).contains(core_mhz) {
+                    return Err(ControlError::InvalidField("coreMhz"));
+                }
+                if !(-1000..=1000).contains(mem_mhz) {
+                    return Err(ControlError::InvalidField("memMhz"));
+                }
             }
             Self::SetColorProfile { profile_id }
                 if profile_id.is_empty()
@@ -451,6 +615,16 @@ impl ControlChange {
             }
             Self::SetColorProfile { profile_id } if !state.supported_color_profiles.contains(profile_id) => {
                 return Err(ControlError::UnsupportedValue("profileId"));
+            }
+            Self::SetGpuClockOffset { core_mhz, mem_mhz } => {
+                let offset = state.gpu_clock_offset
+                    .ok_or(ControlError::UnsupportedValue("gpuClockOffset"))?;
+                if !(offset.core_min_mhz..=offset.core_max_mhz).contains(core_mhz) {
+                    return Err(ControlError::UnsupportedValue("coreMhz"));
+                }
+                if !(offset.mem_min_mhz..=offset.mem_max_mhz).contains(mem_mhz) {
+                    return Err(ControlError::UnsupportedValue("memMhz"));
+                }
             }
             _ => {}
         }
@@ -538,5 +712,73 @@ mod tests {
         for mode in [PerformanceMode::SuperBattery, PerformanceMode::Silent, PerformanceMode::Balanced, PerformanceMode::ExtremePerformance] {
             assert_eq!(serde_json::to_value(mode).unwrap(), mode.protocol_name());
         }
+    }
+
+    #[test]
+    fn gpu_offset_parameters_and_verified_bounds_are_independent() {
+        let change = |core_mhz, mem_mhz| ControlChange::SetGpuClockOffset { core_mhz, mem_mhz };
+        assert_eq!(change(0, 0).capability(), CapabilityFlags::GPU_CLOCK_OFFSET);
+        assert_eq!(CapabilityFlags::GPU_CLOCK_OFFSET.bits(), 1 << 12);
+        assert_eq!(change(0, 0).target(), ControlTarget::GpuClockOffset {});
+        for (core, mem) in [(-1000, 1000), (1000, -1000), (0, 200)] {
+            assert_eq!(change(core, mem).validate_parameters(), Ok(()));
+        }
+        for core in [i16::MIN, -1001, 1001, i16::MAX] {
+            assert_eq!(change(core, 0).validate_parameters(), Err(ControlError::InvalidField("coreMhz")));
+        }
+        for mem in [i16::MIN, -1001, 1001, i16::MAX] {
+            assert_eq!(change(0, mem).validate_parameters(), Err(ControlError::InvalidField("memMhz")));
+        }
+        let mut state = HardwareState::default();
+        assert_eq!(change(0, 0).validate_against(&state), Err(ControlError::UnsupportedValue("gpuClockOffset")));
+        state.gpu_clock_offset = Some(GpuClockOffsetState {
+            core_mhz: 0, mem_mhz: 0,
+            core_min_mhz: 0, core_max_mhz: 200,
+            mem_min_mhz: 0, mem_max_mhz: 200,
+        });
+        for (core, mem) in [(0, 0), (200, 200), (0, 200), (200, 0)] {
+            assert_eq!(change(core, mem).validate_against(&state), Ok(()));
+        }
+        for core in [-1, 201] {
+            assert_eq!(change(core, 0).validate_against(&state), Err(ControlError::UnsupportedValue("coreMhz")));
+        }
+        for mem in [-1, 201] {
+            assert_eq!(change(0, mem).validate_against(&state), Err(ControlError::UnsupportedValue("memMhz")));
+        }
+        state.gpu_clock_offset.as_mut().unwrap().core_max_mhz = 100;
+        assert_eq!(change(101, 0).validate_against(&state), Err(ControlError::UnsupportedValue("coreMhz")));
+        assert_eq!(change(100, 200).validate_against(&state), Ok(()));
+    }
+
+    #[test]
+    fn optional_gpu_state_and_telemetry_preserve_legacy_wire_shape() {
+        let state = HardwareState::default();
+        let legacy = serde_json::to_value(&state).unwrap();
+        assert!(legacy.get("gpuClockOffset").is_none());
+        assert_eq!(serde_json::from_value::<HardwareState>(legacy).unwrap(), state);
+        let sample = TelemetrySample::default();
+        let legacy = serde_json::to_string(&sample).unwrap();
+        assert_eq!(legacy, r#"{"sampledAtUnixMs":0,"cpuTemperatureC":null,"gpuTemperatureC":null,"cpuFanRpm":null,"gpuFanRpm":null,"cpuReportedDutyPercent":null,"gpuReportedDutyPercent":null,"gpuPowerMw":null}"#);
+        assert_eq!(serde_json::from_str::<TelemetrySample>(&legacy).unwrap(), sample);
+        let sample = TelemetrySample {
+            cpu_utilization_percent: Some(0), memory_used_mb: Some(16_384), memory_total_mb: Some(65_536),
+            gpu_utilization_percent: Some(100), gpu_clock_mhz: Some(1200), gpu_mem_clock_mhz: Some(405),
+            gpu_vram_used_mb: Some(1969), gpu_vram_total_mb: Some(24463), gpu_power_limit_mw: Some(175000),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(sample).unwrap();
+        for (field, expected) in [
+            ("cpuUtilizationPercent", 0), ("memoryUsedMb", 16_384), ("memoryTotalMb", 65_536),
+            ("gpuUtilizationPercent", 100), ("gpuClockMhz", 1200), ("gpuMemClockMhz", 405),
+            ("gpuVramUsedMb", 1969), ("gpuVramTotalMb", 24463), ("gpuPowerLimitMw", 175000),
+        ] {
+            assert_eq!(value[field], expected);
+        }
+        assert_eq!(serde_json::from_value::<TelemetrySample>(value).unwrap(), sample);
+        let offset = GpuClockOffsetState {
+            core_mhz: 100, mem_mhz: 200,
+            core_min_mhz: 0, core_max_mhz: 200, mem_min_mhz: 0, mem_max_mhz: 200,
+        };
+        assert_eq!(serde_json::to_string(&offset).unwrap(), r#"{"coreMhz":100,"memMhz":200,"coreMinMhz":0,"coreMaxMhz":200,"memMinMhz":0,"memMaxMhz":200}"#);
     }
 }

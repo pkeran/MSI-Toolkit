@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{AuthorizedEcWrite, CapabilityFlags, ControlChange, ControlTarget, ErrorCode, HardwareState, OsdKind, PowerSource, Rgb8, SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT};
+use crate::{AuthorizedEcWrite, CapabilityFlags, ControlChange, ControlTarget, ErrorCode, HardwareState, KeyboardEffect, KeyboardSpeed, OsdKind, PowerSource, Rgb8, SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT};
 
 pub type HalResult<T> = Result<T, HalError>;
 
@@ -31,6 +31,7 @@ pub struct HardwareReport {
 pub trait HardwareRead {
     fn inspect(&mut self) -> HalResult<HardwareReport>;
     fn sample_telemetry(&mut self) -> HalResult<TelemetrySample>;
+    fn set_gpu_telemetry(&mut self, _enabled: bool) {}
 }
 
 /// Low-level I/O for a verified byte mapping; never exposed to IPC clients.
@@ -44,7 +45,15 @@ pub trait PlatformControl {
     fn set_display_refresh_rate(&mut self, hz: u16) -> HalResult<u16>;
     fn set_display_brightness(&mut self, percent: u8) -> HalResult<u8>;
     fn set_color_profile(&mut self, profile_id: &str) -> HalResult<()>;
-    fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()>;
+    fn set_keyboard_lighting(
+        &mut self,
+        zones: &[Rgb8; KEYBOARD_ZONE_COUNT],
+        effect: KeyboardEffect,
+        speed: KeyboardSpeed,
+    ) -> HalResult<()>;
+    fn set_gpu_clock_offset(&mut self, _core_mhz: i16, _mem_mhz: i16) -> HalResult<(i16, i16)> {
+        Err(HalError::Unsupported)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

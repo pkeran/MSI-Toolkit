@@ -47,6 +47,7 @@ impl BackendOptions {
                 | CapabilityFlags::DISPLAY_BRIGHTNESS
                 | CapabilityFlags::COLOR_PROFILE
                 | CapabilityFlags::KEYBOARD_LIGHTING
+                | CapabilityFlags::GPU_CLOCK_OFFSET
         } else {
             CapabilityFlags::NONE
         };

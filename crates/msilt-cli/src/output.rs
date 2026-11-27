@@ -161,6 +161,9 @@ fn write_snapshot(out: &mut impl Write, snapshot: &SystemSnapshot) -> io::Result
     } else {
         writeln!(out, "GPU MUX: unknown")?;
     }
+    if let Some(offset) = hw.gpu_clock_offset {
+        writeln!(out, "GPU clock offset: core {:+}, VRAM {:+} MHz", offset.core_mhz, offset.mem_mhz)?;
+    }
     optional(
         out,
         "Keyboard lighting (observed zones)",
@@ -243,6 +246,7 @@ fn target_arg(target: ControlTarget) -> &'static str {
         ControlTarget::DisplayBrightness {} => "brightness",
         ControlTarget::ColorProfile {} => "color",
         ControlTarget::KeyboardLighting {} => "keyboard-lighting",
+        ControlTarget::GpuClockOffset {} => "gpu-clock-offset",
         _ => "unknown target",
     }
 }
@@ -348,6 +352,21 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("Brightness: 0%\n"));
         assert!(text.contains("Battery level: unknown\n"));
+    }
+
+    #[test]
+    fn gpu_offset_output_is_compact_and_absent_when_unavailable() {
+        let mut snapshot = SystemSnapshot::default();
+        let mut out = Vec::new();
+        write_snapshot(&mut out, &snapshot).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("GPU clock offset"));
+        snapshot.hardware.gpu_clock_offset = Some(msilt_core::GpuClockOffsetState {
+            core_mhz: 100, mem_mhz: 200,
+            core_min_mhz: 0, core_max_mhz: 200, mem_min_mhz: 0, mem_max_mhz: 200,
+        });
+        let mut out = Vec::new();
+        write_snapshot(&mut out, &snapshot).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("GPU clock offset: core +100, VRAM +200 MHz\n"));
     }
 
     #[test]

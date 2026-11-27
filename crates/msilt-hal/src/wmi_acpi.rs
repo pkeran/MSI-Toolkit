@@ -908,7 +908,10 @@ impl WmiWorker {
         if self.quarantined {
             self.unsettled_ec = Some(ownership);
         }
-        decode_packet(&result?, method.name())
+        let output = result?.ok_or_else(|| {
+            Diagnostic::invalid(method.name(), "WMI method returned no output object")
+        })?;
+        decode_packet(&output, method.name())
     }
 
     fn set_brightness(
@@ -940,12 +943,30 @@ impl WmiWorker {
                 .and_then(|()| input.Put(w!("Brightness"), 0, &brightness.0, 0))
         }
         .map_err(|e| Diagnostic::windows(BRIGHTNESS_METHOD, e))?;
-        let output = self.invoke_method(&path, BRIGHTNESS_METHOD, Some(&input), deadline)?;
-        let (status, cim) = property(&output, w!("ReturnValue"), BRIGHTNESS_METHOD)?;
-        check_brightness_status(&status, cim)?;
-        let (instance, row) = brightness_row(self.services(deadline)?, key, deadline)?;
-        same_monitor_instance(&expected, &instance)?;
-        current_brightness(&row)
+        if let Some(output) = self.invoke_method(&path, BRIGHTNESS_METHOD, Some(&input), deadline)?
+        {
+            let mut status = OwnedVariant::default();
+            let mut cim = 0;
+            match unsafe {
+                output.Get(w!("ReturnValue"), 0, &mut status.0, Some(&mut cim), None)
+            } {
+                Ok(()) if matches!(status.ty(), VT_EMPTY | VT_NULL) => {}
+                Ok(()) => check_brightness_status(&status, cim)?,
+                Err(e) if e.code().0 == WBEM_E_NOT_FOUND.0 => {}
+                Err(e) => return Err(Diagnostic::windows(BRIGHTNESS_METHOD, e)),
+            }
+        }
+        let mut observed = 0;
+        for attempt in 0..4 {
+            let (instance, row) = brightness_row(self.services(deadline)?, key, deadline)?;
+            same_monitor_instance(&expected, &instance)?;
+            observed = current_brightness(&row)?;
+            if observed == percent || attempt == 3 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Ok(observed)
     }
 
     fn invoke_method(
@@ -954,7 +975,7 @@ impl WmiWorker {
         op: &'static str,
         input: Option<&IWbemClassObject>,
         deadline: Instant,
-    ) -> Result<IWbemClassObject, Diagnostic> {
+    ) -> Result<Option<IWbemClassObject>, Diagnostic> {
         before_deadline(deadline, op)?;
         let mut result = None;
         let services = self.services.as_ref().expect("connected WMI service");
@@ -992,11 +1013,19 @@ impl WmiWorker {
         if status != 0 {
             return Err(Diagnostic::hresult(op, status));
         }
-        unsafe { call.GetResultObject(WBEM_INFINITE) }.map_err(|e| Diagnostic::windows(op, e))
+        let mut raw = ptr::null_mut();
+        let hr = unsafe { (call.vtable().GetResultObject)(call.as_raw(), WBEM_INFINITE, &mut raw) };
+        if hr.is_err() {
+            return Err(Diagnostic::hresult(op, hr.0));
+        }
+        Ok((!raw.is_null()).then(|| unsafe { IWbemClassObject::from_raw(raw) }))
     }
 }
 
 fn check_brightness_status(status: &OwnedVariant, cim: i32) -> Result<(), Diagnostic> {
+    if matches!(status.ty(), VT_EMPTY | VT_NULL) {
+        return Ok(());
+    }
     if cim == CIM_BOOLEAN.0 {
         // The local WmiProv schema exposes a Boolean, not the documented numeric status.
         // The provider's HRESULT and the monitor readback establish the result on this schema.
@@ -1017,7 +1046,7 @@ fn check_brightness_status(status: &OwnedVariant, cim: i32) -> Result<(), Diagno
 
 fn brightness_args(percent: u8) -> [OwnedVariant; 2] {
     [
-        OwnedVariant::tagged(VT_I4, VARIANT_0_0_0 { lVal: 1 }),
+        OwnedVariant::tagged(VT_I4, VARIANT_0_0_0 { lVal: 0 }),
         OwnedVariant::tagged(VT_UI1, VARIANT_0_0_0 { bVal: percent }),
     ]
 }
@@ -1485,9 +1514,13 @@ mod tests {
         );
         let [timeout, percent] = brightness_args(81);
         assert_eq!(timeout.ty(), VT_I4);
-        assert_eq!(unsafe { timeout.parts().Anonymous.lVal }, 1);
+        assert_eq!(unsafe { timeout.parts().Anonymous.lVal }, 0);
         assert_eq!(percent.ty(), VT_UI1);
         assert_eq!(unsafe { percent.parts().Anonymous.bVal }, 81);
+        let empty = OwnedVariant::default();
+        let null = OwnedVariant::tagged(VT_NULL, VARIANT_0_0_0::default());
+        assert!(check_brightness_status(&empty, CIM_BOOLEAN.0).is_ok());
+        assert!(check_brightness_status(&null, CIM_BOOLEAN.0).is_ok());
         let numeric = |l_val| OwnedVariant::tagged(VT_I4, VARIANT_0_0_0 { lVal: l_val });
         let boolean = |value| {
             OwnedVariant::tagged(

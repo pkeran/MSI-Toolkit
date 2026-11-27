@@ -1,8 +1,9 @@
-// Page 4: Keyboard Lighting — proportional physical MSI Vector 17 HX keyboard
-// chassis on top + responsive HSV Color Palette & Brightness deck below.
+// Page 4: Keyboard Lighting — 1:1 physical MS-17S3 / MS-1603 24-zone keyboard
+// + HSV Color Picker + native hardware lighting modes (Static / Breathing /
+// ColorCycle / Wave) + Speed + Brightness + aligned quick presets.
 
 import { Theme } from "../theme.slint";
-import { AppState } from "../state.slint";
+import { AppState, Fmt } from "../state.slint";
 import { ZoneMatrix } from "../components/zone_matrix.slint";
 import { ColorPicker } from "../components/color_picker.slint";
 import { FluentButton } from "../components/fluent_button.slint";
@@ -19,7 +20,7 @@ component PresetChipButton inherits Rectangle {
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    height: 32px;
+    height: 28px;
     border-radius: Theme.radius;
     background: !root.enabled ? Theme.btn-disabled
               : ta.pressed ? Theme.btn-pressed
@@ -50,8 +51,7 @@ component PresetChipButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    // Fixed-width centered content box so swatch dots and text align vertically
-    // and horizontally across every cell of the 2x2 grid at any window width.
+    // Fixed-width centered box so swatches & labels align cleanly across all 2x2 cells.
     Rectangle {
         width: min(64px, max(0px, parent.width - 16px));
         height: parent.height;
@@ -85,8 +85,6 @@ component PresetChipButton inherits Rectangle {
 }
 
 component LightingControlsDeck inherits Rectangle {
-    in property <[string]> brightness-labels: ["关", "低", "中", "高"];
-    in property <[int]> brightness-values: [0, 1, 2, 3];
     in property <bool> can-edit: true;
 
     horizontal-stretch: 2;
@@ -96,30 +94,75 @@ component LightingControlsDeck inherits Rectangle {
     border-color: Theme.card-stroke;
 
     VerticalLayout {
-        padding: 14px;
-        spacing: 10px;
+        padding: 12px;
+        spacing: 7px;
 
-        SectionLabel { text: "亮度"; glyph: "lighting"; hint: "" + AppState.zone-brightness + " / 3"; }
+        SectionLabel {
+            text: "灯效模式";
+            glyph: "pulse";
+            hint: Fmt.effect-name(AppState.zone-effect);
+        }
         FluentSegmentBar {
-            labels: root.brightness-labels;
-            values: root.brightness-values;
-            current: AppState.zone-brightness;
+            compact: true;
+            labels: ["常亮", "呼吸", "循环", "波浪"];
+            values: [0, 1, 2, 3];
+            current: AppState.zone-effect;
             enabled: root.can-edit;
-            picked(v) => { AppState.command(44, v, 0); }
+            picked(v) => { AppState.command(46, v, 0); }
         }
 
-        SectionLabel { text: "快速预设"; glyph: "bolt"; }
+        HorizontalLayout {
+            spacing: 10px;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 6px;
+                SectionLabel {
+                    text: "速度";
+                    glyph: "gauge";
+                    hint: AppState.zone-effect == 0 ? "—" : Fmt.speed-name(AppState.zone-speed);
+                }
+                FluentSegmentBar {
+                    compact: true;
+                    labels: ["慢", "中", "快"];
+                    values: [0, 1, 2];
+                    current: AppState.zone-speed;
+                    enabled: root.can-edit && AppState.zone-effect != 0;
+                    picked(v) => { AppState.command(47, v, 0); }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 6px;
+                SectionLabel {
+                    text: "亮度";
+                    glyph: "lighting";
+                    hint: "" + AppState.zone-brightness + " / 3";
+                }
+                FluentSegmentBar {
+                    compact: true;
+                    labels: ["关", "低", "中", "高"];
+                    values: [0, 1, 2, 3];
+                    current: AppState.zone-brightness;
+                    enabled: root.can-edit;
+                    picked(v) => { AppState.command(44, v, 0); }
+                }
+            }
+        }
+
+        SectionLabel { text: "快速预设"; glyph: "layers"; }
         VerticalLayout {
             spacing: 6px;
             HorizontalLayout {
                 spacing: 6px;
                 PresetChipButton { label: "MSI 红"; dot: #FF1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 0, 0); } }
-                PresetChipButton { label: "冰蓝"; dot: #35C8FF; enabled: root.can-edit; clicked => { AppState.command(42, 1, 0); } }
+                PresetChipButton { label: "冰蓝";   dot: #35C8FF; enabled: root.can-edit; clicked => { AppState.command(42, 1, 0); } }
             }
             HorizontalLayout {
                 spacing: 6px;
-                PresetChipButton { label: "纯白"; dot: #F2F2F2; enabled: root.can-edit; clicked => { AppState.command(42, 2, 0); } }
-                PresetChipButton { label: "熄灭"; dot: #1A1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 3, 0); } }
+                PresetChipButton { label: "纯白";   dot: #F2F2F2; enabled: root.can-edit; clicked => { AppState.command(42, 2, 0); } }
+                PresetChipButton { label: "熄灭";   dot: #1A1A1A; enabled: root.can-edit; clicked => { AppState.command(42, 3, 0); } }
             }
         }
 
@@ -129,17 +172,17 @@ component LightingControlsDeck inherits Rectangle {
             k: AppState.keyboard-device == "—" ? "键盘状态" : AppState.keyboard-device;
             v: AppState.keyboard-conflict ? "被 MSI 软件占用"
              : !AppState.cap-keyboard ? (AppState.connection == 1 ? "未检测到设备" : "等待连接")
-             : (AppState.keyboard-submit == "" ? "就绪" : AppState.keyboard-submit);
+             : (AppState.keyboard-submit == "" ? "就绪 · 硬件原生灯效" : AppState.keyboard-submit);
             mono: false;
             level: AppState.keyboard-conflict ? 2 : (AppState.cap-keyboard ? 3 : 0);
-            row-height: 22px;
+            row-height: 20px;
         }
 
         FluentButton {
             text: "应用到键盘";
             glyph: "check";
             variant: 1;
-            height: 34px;
+            height: 32px;
             enabled: AppState.cap-keyboard && !AppState.keyboard-conflict && AppState.interactive;
             clicked => { AppState.command(41, 0, 0); }
         }
@@ -150,16 +193,17 @@ export component LightingPage inherits Rectangle {
     background: transparent;
     horizontal-stretch: 1;
 
-    property <bool> wide-deck: root.width >= 680px;
+    property <bool> wide-deck: root.width >= 720px;
     property <bool> can-edit: !AppState.keyboard-conflict && (AppState.cap-keyboard || AppState.demo);
 
     VerticalLayout {
-        spacing: 14px;
+        spacing: 10px;
         alignment: start;
 
         ZoneMatrix {
             zones: AppState.zones;
             selected: AppState.zone-selected;
+            selected-count: AppState.zone-selected-count;
             enabled: root.can-edit;
             conflict: AppState.keyboard-conflict;
             toggle(i, additive) => { AppState.zone-edit(i, additive); }

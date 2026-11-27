@@ -567,6 +567,12 @@ impl PipeServer {
         })
     }
 
+    pub(crate) fn wants_gpu_telemetry(&self) -> bool {
+        self.active().any(|connection| {
+            connection.topics.gpu_telemetry && connection.client == Some((ClientKind::Ui, true))
+        })
+    }
+
     pub(crate) fn has_clients(&self) -> bool {
         self.slots
             .iter()

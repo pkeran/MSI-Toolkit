@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use msilt_core::{
     AuthorizedEcWrite, BatteryDetail, CapabilityFlags, EcRegisterIo, FanChannel, GpuMuxMode,
     GpuMuxState, HalError, HalResult, HardwareRead, HardwareReport, HardwareState,
-    KEYBOARD_ZONE_COUNT, PlatformControl, Rgb8, TelemetrySample,
+    KEYBOARD_ZONE_COUNT, KeyboardEffect, KeyboardSpeed, PlatformControl, Rgb8, TelemetrySample,
 };
 use serde::Serialize;
 
@@ -15,7 +15,8 @@ use crate::executor::SerialExecutor;
 use crate::hid_rgb::{self, HidRgbReport};
 use crate::identity::{self, ConflictReport, SystemIdentity};
 use crate::ms17s3;
-use crate::nvml::{self, NvmlReport};
+use crate::nvml::{self, NvmlReport, NvmlSession};
+use crate::system_telemetry::SystemTelemetry;
 use crate::wmi_acpi::{AcpiReader, AcpiReport, Poll};
 use crate::{Diagnostic, DiagnosticKind};
 
@@ -81,6 +82,11 @@ pub struct WindowsHal {
     last_diagnostics: Vec<Diagnostic>,
     control: Option<ControlOptions>,
     keyboard_zones: [Rgb8; KEYBOARD_ZONE_COUNT],
+    keyboard_effect: KeyboardEffect,
+    keyboard_speed: KeyboardSpeed,
+    gpu_telemetry_enabled: bool,
+    nvml: Option<NvmlSession>,
+    system_telemetry: SystemTelemetry,
 }
 
 const INITIAL_KEYBOARD: [Rgb8; KEYBOARD_ZONE_COUNT] = [Rgb8 {
@@ -98,6 +104,11 @@ impl Default for WindowsHal {
             last_diagnostics: Vec::new(),
             control: None,
             keyboard_zones: INITIAL_KEYBOARD,
+            keyboard_effect: KeyboardEffect::Static,
+            keyboard_speed: KeyboardSpeed::Medium,
+            gpu_telemetry_enabled: false,
+            nvml: None,
+            system_telemetry: SystemTelemetry::default(),
         }
     }
 }
@@ -256,18 +267,24 @@ impl WindowsHal {
         if !std::mem::take(&mut self.nvml_once) {
             return None;
         }
-        static NVML: Lane = OnceLock::new();
-        Some(
-            match on_lane(&NVML, "NVML one-shot", Duration::from_secs(6), |deadline| {
-                Ok(nvml::inspect(deadline))
-            }) {
-                Ok(report) => report,
-                Err(error) => NvmlReport {
-                    diagnostics: vec![error],
-                    ..Default::default()
-                },
-            },
-        )
+        Some(nvml::inspect(Instant::now() + Duration::from_secs(6)))
+    }
+
+    fn with_nvml<T>(
+        &mut self,
+        call: impl FnOnce(&NvmlSession, Instant) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let result = (|| {
+            if self.nvml.is_none() {
+                self.nvml = Some(NvmlSession::open(deadline)?);
+            }
+            call(self.nvml.as_ref().expect("active NVML session"), deadline)
+        })();
+        if !self.gpu_telemetry_enabled {
+            drop(self.nvml.take());
+        }
+        result
     }
 
     fn report_result<T>(&mut self, result: Result<T, Diagnostic>) -> HalResult<T> {
@@ -360,11 +377,11 @@ fn acpi_errors(acpi: &AcpiReport) -> impl Iterator<Item = &Diagnostic> {
 fn hardware_state(
     report: &ProbeReport,
     acpi: Option<&AcpiReport>,
-    keyboard_zones: Option<[Rgb8; KEYBOARD_ZONE_COUNT]>,
+    keyboard: Option<([Rgb8; KEYBOARD_ZONE_COUNT], KeyboardEffect, KeyboardSpeed)>,
 ) -> HardwareReport {
-    let control = keyboard_zones.is_some();
+    let control = keyboard.is_some();
     let mut state = HardwareState::default();
-    let mut readable = CapabilityFlags::NONE;
+    let mut readable = CapabilityFlags::TELEMETRY;
     let mut controls_detected = CapabilityFlags::NONE;
     state
         .identity
@@ -479,7 +496,11 @@ fn hardware_state(
                 .count()
                 == 1
         {
-            state.keyboard_zones = keyboard_zones;
+            if let Some((zones, effect, speed)) = keyboard {
+                state.keyboard_zones = Some(zones);
+                state.keyboard_effect = Some(effect);
+                state.keyboard_speed = Some(speed);
+            }
             readable |= CapabilityFlags::KEYBOARD_LIGHTING;
             controls_detected |= CapabilityFlags::KEYBOARD_LIGHTING;
         }
@@ -552,14 +573,27 @@ impl HardwareRead for WindowsHal {
         let acpi = self
             .acpi_enabled
             .then(|| self.read_acpi(Poll::Snapshot, report.sampled_at_unix_ms));
-        let hardware = hardware_state(
+        let panel_vendor = report.display.panel.as_ref().and_then(|panel| panel.adapter_vendor_id);
+        let mut hardware = hardware_state(
             &report,
             acpi.as_ref(),
-            self.control.map(|_| self.keyboard_zones),
+            self.control
+                .map(|_| (self.keyboard_zones, self.keyboard_effect, self.keyboard_speed)),
         );
         self.last_diagnostics = report.diagnostics;
         if let Some(acpi) = &acpi {
             self.last_diagnostics.extend(acpi_errors(acpi).cloned());
+        }
+        if self.control.is_some() && (panel_vendor == Some(0x10DE) || self.gpu_telemetry_enabled) {
+            match self.with_nvml(|session, deadline| session.clock_offsets(deadline)) {
+                Ok(Some(offset)) => {
+                    hardware.state.gpu_clock_offset = Some(offset);
+                    hardware.readable |= CapabilityFlags::GPU_CLOCK_OFFSET;
+                    hardware.controls_detected |= CapabilityFlags::GPU_CLOCK_OFFSET;
+                }
+                Ok(None) => {}
+                Err(error) => self.last_diagnostics.push(error),
+            }
         }
         if hardware == HardwareReport::default() {
             return Err(self
@@ -582,15 +616,30 @@ impl HardwareRead for WindowsHal {
             self.last_diagnostics.extend(acpi_errors(&report).cloned());
             sample = report.telemetry;
         }
-        if let Some(nvml) = self.nvml_sample() {
-            if let [gpu] = nvml.devices.as_slice() {
-                sample.gpu_power_mw = gpu.power_mw;
-                if sample.gpu_temperature_c.is_none() {
-                    sample.gpu_temperature_c =
-                        gpu.temperature_c.and_then(|t| i16::try_from(t).ok());
+        self.system_telemetry.sample(&mut sample, &mut self.last_diagnostics);
+        if self.gpu_telemetry_enabled {
+            let result = self.with_nvml(|session, deadline| {
+                let mut issues = Vec::new();
+                let gpu = session.sample(deadline, &mut issues)?;
+                Ok((gpu, issues))
+            });
+            match result {
+                Ok((gpu, issues)) => {
+                    sample.gpu_power_mw = gpu.power_mw;
+                    sample.gpu_power_limit_mw = gpu.power_limit_mw;
+                    sample.gpu_utilization_percent = gpu.gpu_utilization_percent.and_then(|v| u8::try_from(v).ok());
+                    sample.gpu_clock_mhz = gpu.graphics_clock_mhz.and_then(|v| u16::try_from(v).ok());
+                    sample.gpu_mem_clock_mhz = gpu.memory_clock_mhz.and_then(|v| u16::try_from(v).ok());
+                    sample.gpu_vram_used_mb = gpu.vram_used_mb;
+                    sample.gpu_vram_total_mb = gpu.vram_total_mb;
+                    if sample.gpu_temperature_c.is_none() {
+                        sample.gpu_temperature_c =
+                            gpu.temperature_c.and_then(|t| i16::try_from(t).ok());
+                    }
+                    self.last_diagnostics.extend(issues);
                 }
+                Err(error) => self.last_diagnostics.push(error),
             }
-            self.last_diagnostics.extend(nvml.diagnostics);
         }
         if sample.cpu_temperature_c.is_none()
             && sample.gpu_temperature_c.is_none()
@@ -599,6 +648,9 @@ impl HardwareRead for WindowsHal {
             && sample.cpu_reported_duty_percent.is_none()
             && sample.gpu_reported_duty_percent.is_none()
             && sample.gpu_power_mw.is_none()
+            && sample.cpu_utilization_percent.is_none()
+            && sample.memory_total_mb.is_none()
+            && sample.gpu_clock_mhz.is_none()
         {
             return Err(self
                 .last_diagnostics
@@ -606,6 +658,13 @@ impl HardwareRead for WindowsHal {
                 .map_or(HalError::Unavailable, HalError::from));
         }
         Ok(sample)
+    }
+
+    fn set_gpu_telemetry(&mut self, enabled: bool) {
+        self.gpu_telemetry_enabled = enabled;
+        if !enabled {
+            drop(self.nvml.take());
+        }
     }
 }
 
@@ -630,6 +689,17 @@ impl EcRegisterIo for WindowsHal {
 }
 
 impl PlatformControl for WindowsHal {
+    fn set_gpu_clock_offset(&mut self, core_mhz: i16, mem_mhz: i16) -> HalResult<(i16, i16)> {
+        let result = if self.control.is_some() {
+            nvml::validate_clock_offsets(core_mhz, mem_mhz).and_then(|_| {
+                self.with_nvml(|session, deadline| session.set_clock_offsets(core_mhz, mem_mhz, deadline))
+            })
+        } else {
+            Err(Diagnostic::new("NVML clock offsets", DiagnosticKind::Unsupported))
+        };
+        self.report_result(result)
+    }
+
     fn set_display_refresh_rate(&mut self, hz: u16) -> HalResult<u16> {
         self.platform(|_| {
             on_lane(
@@ -663,7 +733,12 @@ impl PlatformControl for WindowsHal {
             )
         })
     }
-    fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
+    fn set_keyboard_lighting(
+        &mut self,
+        zones: &[Rgb8; KEYBOARD_ZONE_COUNT],
+        effect: KeyboardEffect,
+        speed: KeyboardSpeed,
+    ) -> HalResult<()> {
         let zones = *zones;
         self.platform(|options| {
             on_lane(
@@ -673,6 +748,8 @@ impl PlatformControl for WindowsHal {
                 move |deadline| {
                     hid_rgb::set_keyboard_lighting(
                         &zones,
+                        effect,
+                        speed,
                         options.allow_oem_lighting_conflict,
                         deadline,
                     )
@@ -680,6 +757,8 @@ impl PlatformControl for WindowsHal {
             )
         })?;
         self.keyboard_zones = zones;
+        self.keyboard_effect = effect;
+        self.keyboard_speed = speed;
         Ok(())
     }
 }
@@ -689,9 +768,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_telemetry_and_mutation_do_not_activate_native_channels() {
+    fn default_telemetry_reads_os_without_activating_gpu_or_control_channels() {
         let mut hal = WindowsHal::default();
-        assert_eq!(hal.sample_telemetry(), Err(HalError::Unavailable));
+        let sample = hal.sample_telemetry().unwrap();
+        assert_eq!(sample.cpu_utilization_percent, None);
+        assert!(sample.memory_total_mb.unwrap() > 0);
+        assert!(sample.memory_used_mb.unwrap() <= sample.memory_total_mb.unwrap());
+        assert_eq!(sample.gpu_power_mw, None);
+        assert_eq!(sample.gpu_clock_mhz, None);
         assert_eq!(hal.read_byte(0xD1), Err(HalError::Unavailable));
         assert_eq!(hal.set_display_refresh_rate(60), Err(HalError::Unsupported));
         assert_eq!(hal.set_display_brightness(40), Err(HalError::Unsupported));
@@ -700,11 +784,18 @@ mod tests {
             Err(HalError::Unsupported)
         );
         assert_eq!(
-            hal.set_keyboard_lighting(&[Rgb8 { r: 0, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT]),
+            hal.set_keyboard_lighting(
+                &[Rgb8 { r: 0, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT],
+                KeyboardEffect::Static,
+                KeyboardSpeed::Medium,
+            ),
             Err(HalError::Unsupported)
         );
         assert!(hal.acpi.is_none());
         assert!(!hal.nvml_once);
+        assert!(hal.nvml.is_none());
+        assert!(!hal.gpu_telemetry_enabled);
+        assert_eq!(hal.set_gpu_clock_offset(0, 0), Err(HalError::Unsupported));
     }
 
     #[test]
@@ -716,15 +807,65 @@ mod tests {
         assert_eq!(hal.diagnostics()[0].kind, DiagnosticKind::InvalidData);
         assert_eq!(hal.read_byte(0xD7), Err(HalError::Unavailable));
         assert!(hal.acpi.is_none());
+        for (core, mem) in [(-1, 0), (201, 0), (0, -1), (0, 201)] {
+            assert_eq!(hal.set_gpu_clock_offset(core, mem), Err(HalError::Io));
+            assert_eq!(hal.diagnostics()[0].kind, DiagnosticKind::InvalidData);
+            assert!(hal.nvml.is_none());
+        }
     }
 
     #[test]
-    fn platform_control_cannot_open_the_ec_write_or_nvml_channel() {
+    fn platform_control_does_not_eagerly_open_ec_or_nvml() {
         let hal = WindowsHal::for_platform_control(true);
         assert!(hal.acpi_enabled);
         assert!(!hal.control.unwrap().acpi);
         assert!(!hal.nvml_once);
         assert!(hal.acpi.is_none());
+        assert!(hal.nvml.is_none());
+        assert!(!hal.gpu_telemetry_enabled);
+    }
+
+    #[test]
+    fn readonly_inspect_never_accesses_nvml_even_when_gpu_telemetry_is_requested() {
+        unsafe extern "C" fn shutdown() -> u32 { 0 }
+        let mut hal = WindowsHal::default();
+        hal.set_gpu_telemetry(true);
+        // The fake session has no exports: any accidental NVML query would panic.
+        hal.nvml = Some(NvmlSession::for_test(shutdown));
+        let report = hal.inspect().unwrap();
+        assert_eq!(report.state.gpu_clock_offset, None);
+        assert!(!report.readable.contains(CapabilityFlags::GPU_CLOCK_OFFSET));
+        hal.set_gpu_telemetry(false);
+        assert!(hal.nvml.is_none());
+    }
+
+    #[test]
+    fn disabling_telemetry_drops_nvml_immediately_and_one_shots_do_not_retain_it() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SHUTDOWNS: AtomicU32 = AtomicU32::new(0);
+        unsafe extern "C" fn shutdown() -> u32 {
+            SHUTDOWNS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+        let mut hal = WindowsHal::default();
+        hal.set_gpu_telemetry(true);
+        assert!(hal.nvml.is_none(), "enabling is lazy and does not wake the GPU");
+        hal.nvml = Some(NvmlSession::for_test(shutdown));
+        hal.set_gpu_telemetry(false);
+        assert!(hal.nvml.is_none());
+        assert_eq!(SHUTDOWNS.load(Ordering::SeqCst), 1);
+        hal.set_gpu_telemetry(false);
+        assert_eq!(SHUTDOWNS.load(Ordering::SeqCst), 1);
+        hal.nvml = Some(NvmlSession::for_test(shutdown));
+        assert_eq!(hal.with_nvml(|_, _| Ok(())), Ok(()));
+        assert!(hal.nvml.is_none());
+        assert_eq!(SHUTDOWNS.load(Ordering::SeqCst), 2);
+        hal.set_gpu_telemetry(true);
+        hal.nvml = Some(NvmlSession::for_test(shutdown));
+        assert!(hal.with_nvml::<()>(|_, _| Err(Diagnostic::new("mock NVML", DiagnosticKind::Io))).is_err());
+        assert!(hal.nvml.is_some());
+        drop(hal);
+        assert_eq!(SHUTDOWNS.load(Ordering::SeqCst), 3);
     }
 
     #[test]

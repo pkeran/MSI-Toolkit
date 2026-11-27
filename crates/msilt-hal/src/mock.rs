@@ -24,6 +24,7 @@ pub enum MockWrite {
 pub struct MockHal {
     pub report: HardwareReport,
     pub telemetry: TelemetrySample,
+    pub gpu_telemetry_enabled: bool,
     registers: [Option<u8>; 256],
     operations: Vec<MockRegisterOp>,
     reads: VecDeque<HalResult<()>>,
@@ -38,6 +39,7 @@ impl Default for MockHal {
         Self {
             report: HardwareReport::default(),
             telemetry: TelemetrySample::default(),
+            gpu_telemetry_enabled: false,
             registers: [None; 256],
             operations: Vec::new(),
             reads: VecDeque::new(),
@@ -101,6 +103,10 @@ impl HardwareRead for MockHal {
         self.samples.pop_front().unwrap_or(Ok(()))?;
         Ok(self.telemetry)
     }
+
+    fn set_gpu_telemetry(&mut self, enabled: bool) {
+        self.gpu_telemetry_enabled = enabled;
+    }
 }
 
 impl EcRegisterIo for MockHal {
@@ -130,6 +136,14 @@ impl EcRegisterIo for MockHal {
 }
 
 impl PlatformControl for MockHal {
+    fn set_gpu_clock_offset(&mut self, core_mhz: i16, mem_mhz: i16) -> HalResult<(i16, i16)> {
+        self.permit(&ControlChange::SetGpuClockOffset { core_mhz, mem_mhz })?;
+        let offset = self.report.state.gpu_clock_offset.as_mut().ok_or(HalError::Unsupported)?;
+        offset.core_mhz = core_mhz;
+        offset.mem_mhz = mem_mhz;
+        Ok((core_mhz, mem_mhz))
+    }
+
     fn set_display_refresh_rate(&mut self, hz: u16) -> HalResult<u16> {
         self.permit(&ControlChange::SetDisplayRefreshRate { hz })?;
         self.report.state.display_refresh_hz = Some(hz);
@@ -150,9 +164,20 @@ impl PlatformControl for MockHal {
         Ok(())
     }
 
-    fn set_keyboard_lighting(&mut self, zones: &[Rgb8; KEYBOARD_ZONE_COUNT]) -> HalResult<()> {
-        self.permit(&ControlChange::SetKeyboardLighting { zones: *zones })?;
+    fn set_keyboard_lighting(
+        &mut self,
+        zones: &[Rgb8; KEYBOARD_ZONE_COUNT],
+        effect: msilt_core::KeyboardEffect,
+        speed: msilt_core::KeyboardSpeed,
+    ) -> HalResult<()> {
+        self.permit(&ControlChange::SetKeyboardLighting {
+            zones: *zones,
+            effect,
+            speed,
+        })?;
         self.report.state.keyboard_zones = Some(*zones);
+        self.report.state.keyboard_effect = Some(effect);
+        self.report.state.keyboard_speed = Some(speed);
         Ok(())
     }
 }
@@ -266,7 +291,10 @@ mod tests {
         assert_eq!(mock.set_color_profile("../path"), Err(HalError::Io));
         assert_eq!(mock.set_color_profile("TrueColor_native"), Ok(()));
         let zones = [Rgb8 { r: 1, g: 2, b: 3 }; KEYBOARD_ZONE_COUNT];
-        assert_eq!(mock.set_keyboard_lighting(&zones), Ok(()));
+        assert_eq!(
+            mock.set_keyboard_lighting(&zones, msilt_core::KeyboardEffect::Static, msilt_core::KeyboardSpeed::Medium),
+            Ok(())
+        );
         assert_eq!(mock.inspect().unwrap().state.keyboard_zones, Some(zones));
         mock.script_sample(Err(HalError::TimedOut));
         mock.telemetry.cpu_fan_rpm = Some(0);

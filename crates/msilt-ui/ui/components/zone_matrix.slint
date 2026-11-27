@@ -1,81 +1,126 @@
-// `ZoneMatrix` — Wootility v5 faithful floating physical MSI Vector 17 HX
-// full-size ANSI + Numpad keyboard (matte solid keycaps, tight uniform bezel,
-// luminance-adaptive legends, Wootility corner selection dots).
+// `ZoneMatrix` — 1:1 physical MSI Vector 17 HX AI (MS-17S3 / MS-1603) 99-key
+// keyboard using exact 1334x446 CAD coordinates & official 24-zone hardware
+// bit map (top Z1..Z11 = bits 0..10, bottom Z12..Z24 = bits 11..23).
+//
+// UX guarantees:
+//   * 1:1 visual color reproduction (exact keycap RGB, smooth cross-zone LED
+//     blending on wide keys Space / Enter / Num 0 / Num Enter);
+//   * left-click additive multi-select, right-click exclusive select;
+//   * full hardware-zone hover preview before clicking (highlights every key
+//     in that zone + live toolbar preview badge).
 
 import { Theme } from "../theme.slint";
 import { FluentButton } from "fluent_button.slint";
 import { Chip } from "primitives.slint";
 
+struct KeyDef {
+    label: string,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    zone: int,   // primary hardware zone bit (0..23)
+    zl: int,     // optional left neighbor zone for wide straddling keys (-1 = none)
+    zr: int,     // optional right neighbor zone for wide straddling keys (-1 = none)
+}
+
 component PhysKey inherits Rectangle {
     in property <string> label: "";
     in property <int> zone: 0;
+    in property <int> zl: -1;
+    in property <int> zr: -1;
     in property <[color]> zones: [];
     in property <[bool]> selected: [];
+    in property <int> hovered-zone: -1;
     in property <bool> enabled: true;
-    in property <float> units: 1.0;
-    in property <length> key-h: 36px;
+    in property <bool> compact-font: false;
     callback picked(zone: int, additive: bool);
+    callback hover-zone(zone: int);
 
-    property <color> raw-led: root.zone >= 0 && root.zone < root.zones.length ? root.zones[root.zone] : #383A40;
+    pure function led-color(z: int) -> color {
+        if z < 0 || z >= root.zones.length {
+            return Theme.dark ? #32343A : #C8CCD4;
+        }
+        return root.zones[z];
+    }
+
+    pure function is-black(c: color) -> bool {
+        return c.red == 0 && c.green == 0 && c.blue == 0;
+    }
+
+    pure function cap-color(z: int) -> color {
+        if root.is-black(root.led-color(z)) {
+            return Theme.dark ? #32343A : #C8CCD4;
+        }
+        return root.led-color(z);
+    }
+
+    property <color> c-main: root.cap-color(root.zone);
+    property <color> c-left: root.zl >= 0 ? root.cap-color(root.zl) : root.c-main;
+    property <color> c-right: root.zr >= 0 ? root.cap-color(root.zr) : root.c-main;
+    property <bool> has-grad3: root.zl >= 0 && root.zr >= 0 && (root.c-left != root.c-main || root.c-right != root.c-main);
+    property <bool> has-grad-l: root.zl >= 0 && root.zr < 0 && root.c-left != root.c-main;
+    property <bool> has-grad-r: root.zr >= 0 && root.zl < 0 && root.c-right != root.c-main;
+
     property <bool> is-selected: root.zone >= 0 && root.zone < root.selected.length ? root.selected[root.zone] : false;
-    property <bool> is-off: root.raw-led.red < 12 && root.raw-led.green < 12 && root.raw-led.blue < 12;
+    property <bool> is-zone-hover: root.hovered-zone >= 0 && root.hovered-zone == root.zone;
+    property <float> luma: 0.299 * root.c-main.red + 0.587 * root.c-main.green + 0.114 * root.c-main.blue;
 
-    // True 1:1 zone RGB color on keycap face (neutral unlit cap only when zone is black/off)
-    property <color> cap-fill: root.is-off
-        ? (Theme.dark ? #3A3C42 : #C9CDD5)
-        : root.raw-led;
-
-    // Perceptual luminance for razor-crisp dark/light keycap legends (just like Wootility gray vs red/green caps)
-    property <float> luma: (0.299 * root.cap-fill.red + 0.587 * root.cap-fill.green + 0.114 * root.cap-fill.blue);
-
-    horizontal-stretch: root.units;
-    height: root.key-h;
-    border-radius: 5px;
-    background: key-ta.pressed ? root.cap-fill.darker(0.14)
-              : key-ta.has-hover ? root.cap-fill.brighter(0.08)
-              : root.cap-fill;
-    border-width: root.is-selected ? 1.5px : 0px;
-    border-color: root.is-selected ? (Theme.dark ? #F4F4F6 : #18191C) : transparent;
+    border-radius: 4px;
+    background: root.has-grad3
+        ? @linear-gradient(90deg, root.c-left 15%, root.c-main 50%, root.c-right 85%)
+        : root.has-grad-l
+        ? @linear-gradient(90deg, root.c-left 22%, root.c-main 78%)
+        : root.has-grad-r
+        ? @linear-gradient(90deg, root.c-main 22%, root.c-right 78%)
+        : root.c-main;
+    border-width: root.is-zone-hover ? 2px : (root.is-selected ? 1.5px : 0px);
+    border-color: root.is-zone-hover ? Theme.accent
+                : root.is-selected ? (Theme.dark ? #F5F6F8 : #18191C)
+                : transparent;
     clip: true;
 
-    // Subtle top hairline sheen + 2px matte lower keycap shadow lip
-    Rectangle {
-        x: 1px;
-        y: 0px;
-        width: max(0px, parent.width - 2px);
-        height: 1px;
-        background: rgba(255, 255, 255, 0.14);
-    }
+    // Subtle 1px bottom physical lip ONLY (never tints the face color so RGB stays 1:1)
     Rectangle {
         x: 0px;
-        y: max(0px, parent.height - 2px);
+        y: max(0px, parent.height - 1.5px);
         width: parent.width;
-        height: 2px;
+        height: 1.5px;
         background: rgba(0, 0, 0, 0.22);
     }
 
-    // Wootility v5 iconic top-right circular selection indicator badge
+    // Crisp hover region preview rim across every key belonging to the hovered hardware zone
+    if root.is-zone-hover : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        border-radius: 3px;
+        background: root.luma > 165.0 ? rgba(0, 0, 0, 0.10) : rgba(255, 255, 255, 0.16);
+    }
+
+    // Corner selection indicator badge
     if root.is-selected : Rectangle {
-        x: max(2px, parent.width - 10px);
-        y: 3px;
-        width: 7px;
-        height: 7px;
-        border-radius: 3.5px;
-        background: #E8EAEE;
-        border-width: 1.5px;
-        border-color: #1F2024;
+        x: max(2px, parent.width - 8.5px);
+        y: 2.5px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: #F4F5F7;
+        border-width: 1.25px;
+        border-color: #18191C;
     }
 
     Text {
-        x: 2px;
+        x: 1px;
         y: 0px;
-        width: max(0px, parent.width - 4px);
+        width: max(0px, parent.width - 2px);
         height: max(0px, parent.height - 1px);
         text: root.label;
-        font-size: root.key-h < 28px ? 9px : (root.units >= 1.75 ? 10.5px : 11px);
+        font-size: root.compact-font ? 8.5px : (root.label == "Copilot" ? (parent.width < 36px ? 7.5px : 8.5px) : (parent.width < 34px ? 9px : 10px));
         font-weight: 500;
         font-family: Theme.font-ui;
-        color: root.luma > 118.0 ? #1C1D21 : rgba(244, 245, 248, 0.90);
+        color: root.luma > 132.0 ? #18191C : rgba(248, 249, 251, 0.94);
         horizontal-alignment: center;
         vertical-alignment: center;
         overflow: elide;
@@ -84,9 +129,20 @@ component PhysKey inherits Rectangle {
     key-ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: MouseCursor.pointer;
+        changed has-hover => {
+            if (self.has-hover) {
+                root.hover-zone(root.zone);
+            } else if (root.hovered-zone == root.zone) {
+                root.hover-zone(-1);
+            }
+        }
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
-                root.picked(root.zone, e.modifiers.shift || e.modifiers.control);
+                if (e.button == PointerEventButton.right) {
+                    root.picked(root.zone, false);
+                } else if (e.button == PointerEventButton.left) {
+                    root.picked(root.zone, true);
+                }
             }
         }
     }
@@ -95,45 +151,179 @@ component PhysKey inherits Rectangle {
 export component ZoneMatrix inherits Rectangle {
     in property <[color]> zones: [];
     in property <[bool]> selected: [];
+    in property <int> selected-count: 0;
     in property <bool> enabled: true;
     in property <bool> conflict: false;
     callback toggle(index: int, additive: bool);
     callback select-all();
     callback select-none();
 
-    background: transparent;
-    horizontal-stretch: 1;
+    property <int> hovered-zone: -1;
 
-    // Proportional keycap aspect scaling: keys scale naturally with window width
-    // (19 total units + gaps) instead of flattening into skinny strips on large screens.
-    property <length> unit-w: clamp((root.width - 108px) / 19.0, 32px, 50px);
-    property <length> row-key-h: clamp(root.unit-w * 0.78, 28px, 38px);
-    property <length> fn-key-h: clamp(root.unit-w * 0.54, 21px, 27px);
+    // 1:1 MSI Vector 17 HX AI (MS-17S3 / MS-1603) 99-key layout in 1334x446 CAD units
+    property <[KeyDef]> layout: [
+        // ── Row 0: Function bar (16 main + 3 numpad) ──
+        { label: "Esc",   x:    0.0, y:   1.1, w:  60.0, h: 37.0, zone:  0, zl: -1, zr: -1 },
+        { label: "F1",    x:   72.0, y:   1.1, w:  60.0, h: 37.0, zone:  1, zl: -1, zr: -1 },
+        { label: "F2",    x:  143.9, y:   1.1, w:  60.0, h: 37.0, zone:  1, zl: -1, zr: -1 },
+        { label: "F3",    x:  216.2, y:   1.1, w:  60.0, h: 37.0, zone:  2, zl: -1, zr: -1 },
+        { label: "F4",    x:  288.2, y:   1.1, w:  60.0, h: 37.0, zone:  2, zl: -1, zr: -1 },
+        { label: "F5",    x:  360.7, y:   1.1, w:  60.0, h: 37.0, zone:  3, zl: -1, zr: -1 },
+        { label: "F6",    x:  432.7, y:   1.1, w:  60.0, h: 37.0, zone:  3, zl: -1, zr: -1 },
+        { label: "F7",    x:  504.9, y:   1.1, w:  60.0, h: 37.0, zone:  4, zl: -1, zr: -1 },
+        { label: "F8",    x:  576.9, y:   1.1, w:  60.0, h: 37.0, zone:  4, zl: -1, zr: -1 },
+        { label: "F9",    x:  649.4, y:   1.1, w:  60.0, h: 37.0, zone:  4, zl: -1, zr: -1 },
+        { label: "F10",   x:  721.6, y:   1.1, w:  60.0, h: 37.0, zone:  5, zl: -1, zr: -1 },
+        { label: "F11",   x:  793.6, y:   1.1, w:  60.0, h: 37.0, zone:  5, zl: -1, zr: -1 },
+        { label: "F12",   x:  865.6, y:   1.1, w:  60.0, h: 37.0, zone:  6, zl: -1, zr: -1 },
+        { label: "PrtSc", x:  937.9, y:   1.1, w:  60.0, h: 37.0, zone:  6, zl: -1, zr: -1 },
+        { label: "Ins",   x: 1009.9, y:   1.1, w:  60.0, h: 37.0, zone:  7, zl: -1, zr: -1 },
+        { label: "Del",   x: 1082.1, y:   1.1, w:  60.0, h: 37.0, zone:  7, zl: -1, zr: -1 },
+        { label: "*",     x: 1154.9, y:   1.1, w:  51.0, h: 37.0, zone:  8, zl: -1, zr: -1 },
+        { label: "/",     x: 1218.3, y:   1.1, w:  51.0, h: 37.0, zone:  9, zl: -1, zr: -1 },
+        { label: "Pwr",   x: 1281.9, y:   1.1, w:  51.0, h: 37.0, zone: 10, zl: -1, zr: -1 },
+
+        // ── Row 1: Number row (main) ──
+        { label: "`",         x:    0.0, y:  50.2, w:  45.0, h: 69.0, zone: 0, zl: -1, zr: -1 },
+        { label: "1",         x:   57.2, y:  50.2, w:  68.0, h: 69.0, zone: 1, zl: -1, zr: -1 },
+        { label: "2",         x:  136.9, y:  50.2, w:  68.0, h: 69.0, zone: 1, zl: -1, zr: -1 },
+        { label: "3",         x:  216.7, y:  50.2, w:  68.0, h: 69.0, zone: 2, zl: -1, zr: -1 },
+        { label: "4",         x:  296.4, y:  50.2, w:  68.0, h: 69.0, zone: 2, zl: -1, zr: -1 },
+        { label: "5",         x:  376.2, y:  50.2, w:  68.0, h: 69.0, zone: 3, zl: -1, zr: -1 },
+        { label: "6",         x:  456.0, y:  50.2, w:  68.0, h: 69.0, zone: 3, zl: -1, zr: -1 },
+        { label: "7",         x:  535.7, y:  50.2, w:  68.0, h: 69.0, zone: 4, zl: -1, zr: -1 },
+        { label: "8",         x:  615.5, y:  50.2, w:  68.0, h: 69.0, zone: 4, zl: -1, zr: -1 },
+        { label: "9",         x:  695.3, y:  50.2, w:  68.0, h: 69.0, zone: 5, zl: -1, zr: -1 },
+        { label: "0",         x:  775.1, y:  50.2, w:  68.0, h: 69.0, zone: 5, zl: -1, zr: -1 },
+        { label: "-",         x:  854.8, y:  50.2, w:  68.0, h: 69.0, zone: 6, zl: -1, zr: -1 },
+        { label: "=",         x:  934.6, y:  50.2, w:  68.0, h: 69.0, zone: 6, zl: -1, zr: -1 },
+        { label: "Backspace", x: 1015.0, y:  50.2, w: 127.0, h: 69.0, zone: 7, zl: -1, zr: -1 },
+
+        // ── Row 2: QWERTY row (main) ──
+        { label: "Tab", x:    0.0, y: 131.3, w:  85.0, h: 69.0, zone: 0, zl: -1, zr: -1 },
+        { label: "Q",   x:   96.9, y: 131.3, w:  68.0, h: 69.0, zone: 1, zl: -1, zr: -1 },
+        { label: "W",   x:  176.7, y: 131.3, w:  68.0, h: 69.0, zone: 1, zl: -1, zr: -1 },
+        { label: "E",   x:  256.4, y: 131.3, w:  68.0, h: 69.0, zone: 2, zl: -1, zr: -1 },
+        { label: "R",   x:  336.2, y: 131.3, w:  68.0, h: 69.0, zone: 2, zl: -1, zr: -1 },
+        { label: "T",   x:  416.0, y: 131.3, w:  68.0, h: 69.0, zone: 3, zl: -1, zr: -1 },
+        { label: "Y",   x:  495.8, y: 131.3, w:  68.0, h: 69.0, zone: 3, zl: -1, zr: -1 },
+        { label: "U",   x:  575.5, y: 131.3, w:  68.0, h: 69.0, zone: 4, zl: -1, zr: -1 },
+        { label: "I",   x:  655.3, y: 131.3, w:  68.0, h: 69.0, zone: 4, zl: -1, zr: -1 },
+        { label: "O",   x:  735.1, y: 131.3, w:  68.0, h: 69.0, zone: 5, zl: -1, zr: -1 },
+        { label: "P",   x:  814.9, y: 131.3, w:  68.0, h: 69.0, zone: 6, zl: -1, zr: -1 },
+        { label: "[",   x:  894.6, y: 131.3, w:  68.0, h: 69.0, zone: 6, zl: -1, zr: -1 },
+        { label: "]",   x:  974.4, y: 131.3, w:  68.0, h: 69.0, zone: 6, zl: -1, zr: -1 },
+        { label: "\\",  x: 1055.3, y: 131.3, w:  87.0, h: 69.0, zone: 7, zl: -1, zr: -1 },
+
+        // ── Row 3: ASDF Home row (main — dedicated WASD A=12, S=13, D=14) ──
+        { label: "Caps",  x:   0.0, y: 212.9, w: 105.0, h: 69.0, zone: 11, zl: -1, zr: -1 },
+        { label: "A",     x: 116.9, y: 212.9, w:  68.0, h: 69.0, zone: 12, zl: -1, zr: -1 },
+        { label: "S",     x: 196.7, y: 212.9, w:  68.0, h: 69.0, zone: 13, zl: -1, zr: -1 },
+        { label: "D",     x: 276.4, y: 212.9, w:  68.0, h: 69.0, zone: 14, zl: -1, zr: -1 },
+        { label: "F",     x: 356.2, y: 212.9, w:  68.0, h: 69.0, zone: 15, zl: -1, zr: -1 },
+        { label: "G",     x: 436.0, y: 212.9, w:  68.0, h: 69.0, zone: 16, zl: -1, zr: -1 },
+        { label: "H",     x: 515.8, y: 212.9, w:  68.0, h: 69.0, zone: 16, zl: -1, zr: -1 },
+        { label: "J",     x: 595.5, y: 212.9, w:  68.0, h: 69.0, zone: 17, zl: -1, zr: -1 },
+        { label: "K",     x: 675.3, y: 212.9, w:  68.0, h: 69.0, zone: 17, zl: -1, zr: -1 },
+        { label: "L",     x: 755.1, y: 212.9, w:  68.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: ";",     x: 834.9, y: 212.9, w:  68.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: "'",     x: 914.6, y: 212.9, w:  68.0, h: 69.0, zone: 19, zl: -1, zr: -1 },
+        { label: "Enter", x: 995.3, y: 212.9, w: 147.0, h: 69.0, zone: 20, zl: 19, zr: -1 },
+
+        // ── Row 4: ZXCV Shift row (main) ──
+        { label: "Shift", x:   0.0, y: 294.2, w: 144.0, h: 69.0, zone: 11, zl: -1, zr: -1 },
+        { label: "Z",     x: 156.7, y: 294.2, w:  68.0, h: 69.0, zone: 13, zl: -1, zr: -1 },
+        { label: "X",     x: 236.4, y: 294.2, w:  68.0, h: 69.0, zone: 14, zl: -1, zr: -1 },
+        { label: "C",     x: 316.2, y: 294.2, w:  68.0, h: 69.0, zone: 15, zl: -1, zr: -1 },
+        { label: "V",     x: 395.9, y: 294.2, w:  68.0, h: 69.0, zone: 15, zl: -1, zr: -1 },
+        { label: "B",     x: 475.7, y: 294.2, w:  68.0, h: 69.0, zone: 16, zl: -1, zr: -1 },
+        { label: "N",     x: 555.5, y: 294.2, w:  68.0, h: 69.0, zone: 16, zl: -1, zr: -1 },
+        { label: "M",     x: 635.2, y: 294.2, w:  68.0, h: 69.0, zone: 17, zl: -1, zr: -1 },
+        { label: ",",     x: 715.0, y: 294.2, w:  68.0, h: 69.0, zone: 17, zl: -1, zr: -1 },
+        { label: ".",     x: 794.8, y: 294.2, w:  68.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: "/",     x: 874.6, y: 294.2, w:  68.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: "Shift", x: 955.1, y: 294.2, w: 107.0, h: 69.0, zone: 19, zl: -1, zr: -1 },
+
+        // ── Row 5: Bottom row (main — Copilot key at right modifier slot on A2XWJG) ──
+        { label: "Ctrl",    x:   0.0, y: 374.9, w: 144.0, h: 69.0, zone: 11, zl: -1, zr: -1 },
+        { label: "Win",     x: 156.7, y: 374.9, w:  68.0, h: 69.0, zone: 13, zl: -1, zr: -1 },
+        { label: "Alt",     x: 236.4, y: 374.9, w:  68.0, h: 69.0, zone: 14, zl: -1, zr: -1 },
+        { label: "Space",   x: 317.0, y: 374.9, w: 386.0, h: 69.0, zone: 16, zl: 15, zr: 17 },
+        { label: "AltGr",   x: 715.0, y: 374.9, w:  68.0, h: 69.0, zone: 17, zl: -1, zr: -1 },
+        { label: "\\",      x: 794.8, y: 374.9, w:  68.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: "Copilot", x: 874.9, y: 374.9, w:  56.0, h: 69.0, zone: 18, zl: -1, zr: -1 },
+        { label: "Fn",      x: 943.1, y: 374.9, w:  56.0, h: 69.0, zone: 19, zl: -1, zr: -1 },
+
+        // ── Arrow cluster (staggered) ──
+        { label: "↑", x: 1080.4, y: 321.2, w: 56.0, h: 55.0, zone: 20, zl: -1, zr: -1 },
+        { label: "←", x: 1011.9, y: 388.9, w: 56.0, h: 55.0, zone: 19, zl: -1, zr: -1 },
+        { label: "↓", x: 1080.4, y: 388.9, w: 56.0, h: 55.0, zone: 20, zl: -1, zr: -1 },
+        { label: "→", x: 1148.9, y: 388.9, w: 56.0, h: 55.0, zone: 21, zl: -1, zr: -1 },
+
+        // ── Right 3-column 6-row Numpad (exact physical spacing) ──
+        { label: "+",     x: 1154.9, y:  50.2, w:  51.0, h: 55.0, zone:  8, zl: -1, zr: -1 },
+        { label: "-",     x: 1218.3, y:  50.2, w:  51.0, h: 55.0, zone:  9, zl: -1, zr: -1 },
+        { label: "Num",   x: 1281.9, y:  50.2, w:  51.0, h: 55.0, zone: 10, zl: -1, zr: -1 },
+        { label: "7",     x: 1154.9, y: 118.1, w:  51.0, h: 55.0, zone:  8, zl: -1, zr: -1 },
+        { label: "8",     x: 1218.3, y: 118.1, w:  51.0, h: 55.0, zone:  9, zl: -1, zr: -1 },
+        { label: "9",     x: 1281.9, y: 118.1, w:  51.0, h: 55.0, zone: 10, zl: -1, zr: -1 },
+        { label: "4",     x: 1154.9, y: 185.9, w:  51.0, h: 55.0, zone: 21, zl: -1, zr: -1 },
+        { label: "5",     x: 1218.3, y: 185.9, w:  51.0, h: 55.0, zone: 22, zl: -1, zr: -1 },
+        { label: "6",     x: 1281.9, y: 185.9, w:  51.0, h: 55.0, zone: 23, zl: -1, zr: -1 },
+        { label: "1",     x: 1154.9, y: 253.6, w:  51.0, h: 55.0, zone: 21, zl: -1, zr: -1 },
+        { label: "2",     x: 1218.3, y: 253.6, w:  51.0, h: 55.0, zone: 22, zl: -1, zr: -1 },
+        { label: "3",     x: 1281.9, y: 253.6, w:  51.0, h: 55.0, zone: 23, zl: -1, zr: -1 },
+        { label: "0",     x: 1154.9, y: 321.2, w: 114.4, h: 55.0, zone: 22, zl: 21, zr: -1 },
+        { label: ".",     x: 1281.9, y: 321.2, w:  51.0, h: 55.0, zone: 23, zl: -1, zr: -1 },
+        { label: "Enter", x: 1217.9, y: 388.9, w: 115.0, h: 55.0, zone: 23, zl: 22, zr: -1 },
+    ];
 
     pure function zone-is-selected(i: int) -> bool {
         if i < 0 || i >= root.selected.length { return false; }
         return root.selected[i];
     }
 
-    pure function count-selected() -> int {
-        return (root.zone-is-selected(0) ? 1 : 0) + (root.zone-is-selected(1) ? 1 : 0)
-             + (root.zone-is-selected(2) ? 1 : 0) + (root.zone-is-selected(3) ? 1 : 0)
-             + (root.zone-is-selected(4) ? 1 : 0) + (root.zone-is-selected(5) ? 1 : 0)
-             + (root.zone-is-selected(6) ? 1 : 0) + (root.zone-is-selected(7) ? 1 : 0)
-             + (root.zone-is-selected(8) ? 1 : 0) + (root.zone-is-selected(9) ? 1 : 0)
-             + (root.zone-is-selected(10) ? 1 : 0) + (root.zone-is-selected(11) ? 1 : 0)
-             + (root.zone-is-selected(12) ? 1 : 0) + (root.zone-is-selected(13) ? 1 : 0)
-             + (root.zone-is-selected(14) ? 1 : 0) + (root.zone-is-selected(15) ? 1 : 0)
-             + (root.zone-is-selected(16) ? 1 : 0) + (root.zone-is-selected(17) ? 1 : 0)
-             + (root.zone-is-selected(18) ? 1 : 0) + (root.zone-is-selected(19) ? 1 : 0)
-             + (root.zone-is-selected(20) ? 1 : 0) + (root.zone-is-selected(21) ? 1 : 0)
-             + (root.zone-is-selected(22) ? 1 : 0) + (root.zone-is-selected(23) ? 1 : 0);
+    pure function zone-desc(z: int) -> string {
+        if z == 0  { return "Esc / ` / Tab"; }
+        if z == 1  { return "F1-F2 / 1-2 / Q-W"; }
+        if z == 2  { return "F3-F4 / 3-4 / E-R"; }
+        if z == 3  { return "F5-F6 / 5-6 / T-Y"; }
+        if z == 4  { return "F7-F9 / 7-8 / U-I"; }
+        if z == 5  { return "F10-F11 / 9-0 / O"; }
+        if z == 6  { return "F12-PrtSc / -= / P[]"; }
+        if z == 7  { return "Ins-Del / Backspace / \\"; }
+        if z == 8  { return "小键盘 * / + / 7"; }
+        if z == 9  { return "小键盘 / / - / 8"; }
+        if z == 10 { return "电源 / NumLk / 9"; }
+        if z == 11 { return "Caps / 左 Shift / 左 Ctrl"; }
+        if z == 12 { return "A 键（独立灯区）"; }
+        if z == 13 { return "S / Z / Win"; }
+        if z == 14 { return "D / X / 左 Alt"; }
+        if z == 15 { return "F / C / V / 空格左"; }
+        if z == 16 { return "G-H / B-N / 空格中"; }
+        if z == 17 { return "J-K / M-, / 空格右 / AltGr"; }
+        if z == 18 { return "L-; / .-/ / \\ / Copilot"; }
+        if z == 19 { return "' / 右 Shift / Fn / ←"; }
+        if z == 20 { return "Enter / ↑ / ↓"; }
+        if z == 21 { return "小键盘 4 / 1 / →"; }
+        if z == 22 { return "小键盘 5 / 2 / 0"; }
+        if z == 23 { return "小键盘 6 / 3 / . / Enter"; }
+        return "";
     }
 
-    VerticalLayout {
-        spacing: 10px;
+    background: transparent;
+    horizontal-stretch: 1;
 
-        // Clean Wootility-style toolbar above keyboard
+    // Responsive CAD scale factor preserving exact 1334x446 physical aspect ratio
+    property <length> deck-inner-w: max(560px, root.width - 30px);
+    property <float> scale: clamp(root.deck-inner-w / 1334px, 0.44, 0.62);
+    property <length> board-w: 1334px * root.scale;
+    property <length> board-h: 446px * root.scale;
+
+    VerticalLayout {
+        spacing: 8px;
+
+        // Clean toolbar above keyboard with live hover region preview
         HorizontalLayout {
             spacing: 8px;
             height: 28px;
@@ -152,13 +342,24 @@ export component ZoneMatrix inherits Rectangle {
                     level: 2;
                 }
             }
+            if !root.conflict && root.hovered-zone >= 0 : VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: "第 " + (root.hovered-zone + 1) + " 区 · " + root.zone-desc(root.hovered-zone)
+                        + (root.zone-is-selected(root.hovered-zone) ? "（点击取消）" : "（点击选中）");
+                    level: 4;
+                }
+            }
+
             Rectangle { horizontal-stretch: 1; background: transparent; }
 
             VerticalLayout {
                 alignment: center;
                 Chip {
-                    text: "已选 " + root.count-selected() + " / 24 区";
-                    level: 0;
+                    text: root.selected-count == 0
+                        ? "全键盘 · 点按多选"
+                        : ("已选 " + root.selected-count + " / 24 区");
+                    level: root.selected-count > 0 ? 3 : 0;
                 }
             }
             VerticalLayout {
@@ -167,7 +368,7 @@ export component ZoneMatrix inherits Rectangle {
                     text: "全选";
                     compact: true;
                     variant: 0;
-                    width: 80px;
+                    width: 68px;
                     enabled: root.enabled;
                     clicked => { root.select-all(); }
                 }
@@ -175,187 +376,72 @@ export component ZoneMatrix inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 FluentButton {
-                    text: "取消选择";
+                    text: "清空选区";
                     compact: true;
                     variant: 0;
-                    width: 80px;
-                    enabled: root.enabled;
+                    width: 78px;
+                    enabled: root.enabled && root.selected-count > 0;
                     clicked => { root.select-none(); }
                 }
             }
         }
 
-        // Wootility v5 floating matte-graphite / aluminum keyboard chassis (directly on canvas)
+        // Matte aluminum / graphite physical keyboard chassis
         Rectangle {
-            background: Theme.dark ? #2B2C31 : #E5E7ED;
+            background: Theme.dark ? #26272C : #E3E6EC;
             border-radius: 10px;
             border-width: 1.5px;
-            border-color: root.conflict ? Theme.danger : (Theme.dark ? #3A3B42 : #CFD3DC);
+            border-color: root.conflict ? Theme.danger : (Theme.dark ? #3A3C44 : #CCD1DB);
             clip: true;
 
-            // Subtle lower deck bevel edge (Wootility chassis depth)
             Rectangle {
                 x: 0px;
                 y: max(0px, parent.height - 4px);
                 width: parent.width;
                 height: 4px;
-                background: Theme.dark ? #1E1F23 : #D4D8E1;
+                background: Theme.dark ? #1B1C20 : #D1D6DF;
             }
 
-            // Inner tight switch well
             VerticalLayout {
                 padding-left: 10px;
                 padding-right: 10px;
-                padding-top: 9px;
-                padding-bottom: 12px;
+                padding-top: 7px;
+                padding-bottom: 9px;
+                alignment: center;
 
-                Rectangle {
-                    background: Theme.dark ? #1F2024 : #D4D8E0;
-                    border-radius: 6px;
+                // Inner switch well sized proportionally to exact CAD bounds
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.board-w + 10px;
+                        height: root.board-h + 10px;
+                        background: Theme.dark ? #1B1C20 : #CFD4DD;
+                        border-radius: 6px;
 
-                    VerticalLayout {
-                        padding: 5px;
-                        spacing: 4px;
+                        Rectangle {
+                            x: 5px;
+                            y: 5px;
+                            width: root.board-w;
+                            height: root.board-h;
+                            background: transparent;
 
-                        // ── Row 0: Slim Function bar (15u + 4u) ── Zones 0..5
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "Esc"; zone: 0; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F1"; zone: 0; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F2"; zone: 0; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F3"; zone: 1; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F4"; zone: 1; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F5"; zone: 2; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F6"; zone: 2; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F7"; zone: 2; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F8"; zone: 3; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F9"; zone: 3; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F10"; zone: 3; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F11"; zone: 4; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F12"; zone: 4; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "PrtSc"; zone: 4; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Del"; zone: 4; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "Home"; zone: 5; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "PgUp"; zone: 5; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "PgDn"; zone: 5; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "End"; zone: 5; units: 1.0; key-h: root.fn-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                        }
-
-                        // Subtle F-row deck separation
-                        Rectangle { height: 2px; background: transparent; }
-
-                        // ── Row 1: Number row (15u + 4u) ── Zones 0..5
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "`"; zone: 0; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "1"; zone: 0; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "2"; zone: 0; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "3"; zone: 1; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "4"; zone: 1; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "5"; zone: 1; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "6"; zone: 2; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "7"; zone: 2; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "8"; zone: 2; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "9"; zone: 3; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "0"; zone: 3; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "-"; zone: 3; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "="; zone: 4; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Backspace"; zone: 4; units: 2.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "Num"; zone: 5; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "/"; zone: 5; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "*"; zone: 5; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "-"; zone: 5; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                        }
-
-                        // ── Row 2: QWERTY row (15u + 4u) ── Zones 6..11
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "Tab"; zone: 6; units: 1.5; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Q"; zone: 6; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "W"; zone: 6; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "E"; zone: 7; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "R"; zone: 7; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "T"; zone: 7; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Y"; zone: 8; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "U"; zone: 8; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "I"; zone: 8; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "O"; zone: 9; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "P"; zone: 9; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "["; zone: 9; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "]"; zone: 10; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "\\"; zone: 10; units: 1.5; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "7"; zone: 11; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "8"; zone: 11; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "9"; zone: 11; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "+"; zone: 11; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                        }
-
-                        // ── Row 3: ASDF Home row (15u + 4u) ── Zones 12..17
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "Caps"; zone: 12; units: 1.75; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "A"; zone: 12; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "S"; zone: 12; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "D"; zone: 13; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "F"; zone: 13; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "G"; zone: 13; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "H"; zone: 14; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "J"; zone: 14; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "K"; zone: 14; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "L"; zone: 15; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: ";"; zone: 15; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "'"; zone: 15; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Enter"; zone: 16; units: 2.25; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "4"; zone: 17; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "5"; zone: 17; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "6"; zone: 17; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "+"; zone: 17; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                        }
-
-                        // ── Row 4: ZXCV Shift row (15u + 4u) ── Zones 18..23
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "L-Shift"; zone: 18; units: 2.25; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Z"; zone: 18; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "X"; zone: 18; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "C"; zone: 19; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "V"; zone: 19; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "B"; zone: 19; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "N"; zone: 20; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "M"; zone: 20; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: ","; zone: 20; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "."; zone: 21; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "/"; zone: 21; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "R-Shift"; zone: 22; units: 1.75; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "↑"; zone: 22; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "1"; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "2"; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "3"; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Ent"; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                        }
-
-                        // ── Row 5: Bottom Space + Arrows row (15u + 4u) ── Zones 18..23
-                        HorizontalLayout {
-                            spacing: 4px;
-                            PhysKey { label: "L-Ctrl"; zone: 18; units: 1.25; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Win"; zone: 18; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "L-Alt"; zone: 19; units: 1.25; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Spacebar"; zone: 20; units: 5.5; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "R-Alt"; zone: 21; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Fn"; zone: 21; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "R-Ctrl"; zone: 21; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "←"; zone: 22; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "↓"; zone: 22; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "→"; zone: 22; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            Rectangle { width: 7px; horizontal-stretch: 0; background: transparent; }
-                            PhysKey { label: "0"; zone: 23; units: 2.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "."; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
-                            PhysKey { label: "Ent"; zone: 23; units: 1.0; key-h: root.row-key-h; zones: root.zones; selected: root.selected; enabled: root.enabled; picked(z, a) => { root.toggle(z, a); } }
+                            for k in root.layout : PhysKey {
+                                x: k.x * root.scale * 1px;
+                                y: k.y * root.scale * 1px;
+                                width: k.w * root.scale * 1px;
+                                height: k.h * root.scale * 1px;
+                                label: k.label;
+                                zone: k.zone;
+                                zl: k.zl;
+                                zr: k.zr;
+                                compact-font: k.h < 42.0;
+                                zones: root.zones;
+                                selected: root.selected;
+                                hovered-zone: root.hovered-zone;
+                                enabled: root.enabled;
+                                picked(z, additive) => { root.toggle(z, additive); }
+                                hover-zone(z) => { root.hovered-zone = z; }
+                            }
                         }
                     }
                 }

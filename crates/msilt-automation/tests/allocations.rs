@@ -19,7 +19,7 @@ use msilt_automation::{
     RuleEngine,
 };
 use msilt_core::{
-    CapabilityFlags, DaemonStatus, EcWriteStatus, HardwareState, PerformanceMode, PowerSource,
+    CapabilityFlags, DaemonStatus, EcWriteStatus, GpuClockOffsetState, HardwareState, PerformanceMode, PowerSource,
     SystemSnapshot,
 };
 
@@ -98,6 +98,10 @@ fn snapshot() -> SystemSnapshot {
                 PerformanceMode::Balanced,
             ],
             performance_mode: Some(PerformanceMode::Balanced),
+            gpu_clock_offset: Some(GpuClockOffsetState {
+                core_mhz: 0, mem_mhz: 0,
+                core_min_mhz: 0, core_max_mhz: 200, mem_min_mhz: 0, mem_max_mhz: 200,
+            }),
             ..HardwareState::default()
         },
         manual_overrides: Vec::new(),

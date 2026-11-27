@@ -3,13 +3,14 @@
 
 import { Theme } from "../theme.slint";
 import { AppState, Fmt } from "../state.slint";
+import { Slider } from "std-widgets.slint";
 import { SettingsCard } from "../components/settings_card.slint";
 import { FluentButton } from "../components/fluent_button.slint";
 import { FluentSegmentBar } from "../components/fluent_segment.slint";
 import { FluentToggle } from "../components/fluent_toggle.slint";
 import { FanCurveEditor } from "../components/fan_curve.slint";
 import { InfoBar } from "../components/info_bar.slint";
-import { Chip, NoteRow } from "../components/primitives.slint";
+import { Chip, NoteRow, Rule } from "../components/primitives.slint";
 
 component ModeCard inherits Rectangle {
     horizontal-stretch: 3;
@@ -109,6 +110,181 @@ component GpuCurveCard inherits Rectangle {
         edit(i, d) => { AppState.curve-edit(1, i, d); }
         apply() => { AppState.command(31, 1, 0); }
         reset() => { AppState.command(32, 1, 0); }
+    }
+}
+
+component OffsetRow inherits Rectangle {
+    in property <string> label: "";
+    in property <string> live-clock: "—";
+    in property <int> value: 0;
+    in property <int> min-val: 0;
+    in property <int> max-val: 200;
+    in property <bool> enabled: true;
+    callback edited(v: int);
+
+    height: 36px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 12px;
+
+        Text {
+            width: 96px;
+            text: root.label;
+            font-size: Theme.font-body;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+
+        FluentButton {
+            text: "−";
+            compact: true;
+            variant: 0;
+            width: 30px;
+            enabled: root.enabled && root.value > root.min-val;
+            clicked => { root.edited(max(root.min-val, root.value - 5)); }
+        }
+
+        Slider {
+            horizontal-stretch: 1;
+            minimum: root.min-val;
+            maximum: root.max-val;
+            step: 5;
+            value: root.value;
+            enabled: root.enabled;
+            changed(v) => { root.edited(Math.round(v / 5.0) * 5); }
+        }
+
+        FluentButton {
+            text: "+";
+            compact: true;
+            variant: 0;
+            width: 30px;
+            enabled: root.enabled && root.value < root.max-val;
+            clicked => { root.edited(min(root.max-val, root.value + 5)); }
+        }
+
+        Text {
+            width: 72px;
+            text: Fmt.offset-mhz(root.value);
+            font-size: Theme.font-body;
+            font-weight: 600;
+            font-family: Theme.font-mono;
+            color: root.value != 0 ? Theme.accent : Theme.text;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        Text {
+            width: 112px;
+            text: "当前 " + root.live-clock;
+            font-size: Theme.font-caption;
+            font-family: Theme.font-mono;
+            color: Theme.text-3;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component GpuOffsetSection inherits VerticalLayout {
+    spacing: Theme.gap-group-head;
+
+    property <bool> on-ac: AppState.power-source == 0;
+    property <bool> can-apply-oc: AppState.cap-gpu-oc && AppState.interactive && (root.on-ac || (AppState.gpu-oc-draft-core == 0 && AppState.gpu-oc-draft-mem == 0));
+    property <bool> can-reset-oc: AppState.cap-gpu-oc && AppState.interactive && (AppState.gpu-oc-active || AppState.gpu-oc-dirty);
+
+    HorizontalLayout {
+        spacing: 8px;
+        height: 28px;
+
+        Text {
+            text: "显卡频率偏移（进阶）";
+            font-size: Theme.font-group;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            Chip {
+                text: AppState.gpu-oc-active
+                    ? ("已生效 · 核心 " + Fmt.offset-mhz(AppState.gpu-oc-core) + " / 显存 " + Fmt.offset-mhz(AppState.gpu-oc-mem))
+                    : (!root.on-ac ? "仅交流电可应用" : "默认 0 MHz");
+                level: AppState.gpu-oc-active ? 3 : (!root.on-ac ? 1 : 0);
+            }
+        }
+        if AppState.gpu-oc-dirty : VerticalLayout {
+            alignment: center;
+            Chip {
+                text: "未应用";
+                level: 1;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+
+        VerticalLayout {
+            alignment: center;
+            FluentButton {
+                text: "重置 0 MHz";
+                compact: true;
+                variant: 0;
+                width: 88px;
+                enabled: root.can-reset-oc;
+                clicked => { AppState.command(38, 0, 0); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            FluentButton {
+                text: "应用偏移";
+                compact: true;
+                variant: 1;
+                width: 84px;
+                enabled: root.can-apply-oc && AppState.gpu-oc-dirty;
+                clicked => { AppState.command(37, 0, 0); }
+            }
+        }
+    }
+
+    Rectangle {
+        background: Theme.card;
+        border-radius: Theme.radius-card;
+        border-width: 1px;
+        border-color: Theme.card-stroke;
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 8px;
+
+            OffsetRow {
+                label: "核心频率偏移";
+                live-clock: Fmt.mhz(AppState.gpu-clock-mhz);
+                value: AppState.gpu-oc-draft-core;
+                min-val: AppState.gpu-oc-core-min;
+                max-val: AppState.gpu-oc-core-max;
+                enabled: AppState.cap-gpu-oc && AppState.interactive && root.on-ac;
+                edited(v) => { AppState.command(35, v, 0); }
+            }
+
+            Rule { }
+
+            OffsetRow {
+                label: "显存频率偏移";
+                live-clock: Fmt.mhz(AppState.gpu-mem-clock-mhz);
+                value: AppState.gpu-oc-draft-mem;
+                min-val: AppState.gpu-oc-mem-min;
+                max-val: AppState.gpu-oc-mem-max;
+                enabled: AppState.cap-gpu-oc && AppState.interactive && root.on-ac;
+                edited(v) => { AppState.command(36, v, 0); }
+            }
+        }
+    }
+
+    NoteRow {
+        level: 4;
+        text: "范围限定在 MSI 官方安全区间（" + Fmt.offset-mhz(AppState.gpu-oc-core-min) + " ~ " + Fmt.offset-mhz(AppState.gpu-oc-core-max)
+            + "），仅插电时可应用非零偏移；电池模式下仍支持一键重置 0 MHz，系统重启后自动恢复默认。";
     }
 }
 
@@ -257,5 +433,7 @@ export component PerformancePage inherits Rectangle {
                 GpuCurveCard { canvas-h: root.curve-canvas-h; }
             }
         }
+
+        if AppState.gpu-oc-supported : GpuOffsetSection { }
     }
 }

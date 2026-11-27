@@ -134,7 +134,9 @@ export component MonitorPage inherits Rectangle {
                                 VerticalLayout { alignment: center; Rectangle { width: 1px; height: 14px; background: Theme.divider; } }
                                 KeyValue { horizontal-stretch: 1; k: "GPU 风扇"; v: Fmt.rpm(AppState.gpu-rpm); }
                                 VerticalLayout { alignment: center; Rectangle { width: 1px; height: 14px; background: Theme.divider; } }
-                                KeyValue { horizontal-stretch: 1; k: "GPU 功耗"; v: Fmt.watts(AppState.gpu-power-mw); }
+                                KeyValue { horizontal-stretch: 1; k: "GPU 功耗"; v: Fmt.watts-pair(AppState.gpu-power-mw, AppState.gpu-power-limit-mw); }
+                                VerticalLayout { alignment: center; Rectangle { width: 1px; height: 14px; background: Theme.divider; } }
+                                KeyValue { horizontal-stretch: 1; k: "内存占用"; v: Fmt.gb-pair(AppState.mem-used-mb, AppState.mem-total-mb); }
                             }
                         }
                     }
@@ -158,7 +160,26 @@ export component MonitorPage inherits Rectangle {
         }
 
         SettingsGroup {
-            title: "屏幕悬浮提示";
+            title: "监控与屏幕提示";
+
+            SettingsCard {
+                glyph: "pulse";
+                title: "独立显卡详细遥测（功耗 / 频率 / 显存）";
+                subtitle: AppState.mux-current == 1
+                    ? "独显直连模式下自动采集，离开监控页或关闭窗口后自动卸载 NVML"
+                    : "混合显卡模式下开启可能会唤醒独立显卡，关闭后自动卸载 NVML";
+                card-height: 58px;
+
+                if AppState.mux-current == 1 : Chip {
+                    text: "独显直连已自动启用";
+                    level: 3;
+                }
+                if AppState.mux-current != 1 : FluentToggle {
+                    checked: AppState.gpu-telemetry;
+                    enabled: AppState.interactive;
+                    toggled => { AppState.command(90, 0, 0); }
+                }
+            }
 
             SettingsCard {
                 glyph: "display";

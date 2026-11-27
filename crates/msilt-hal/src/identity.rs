@@ -61,6 +61,7 @@ const MSI_PROCESSES: &[&str] = &[
     "MSI.Center.Server.exe",
     "MSI Center.exe",
     "gpuControl.exe",
+    "MSIAfterburner.exe",
 ];
 const MSI_SERVICES: &[&str] = &[
     "MSI_Center_Service",
@@ -287,6 +288,15 @@ pub(crate) fn lighting_conflicts(issues: &mut Vec<Diagnostic>) -> ConflictReport
 
 pub(crate) fn ec_conflicts(issues: &mut Vec<Diagnostic>) -> ConflictReport {
     query_conflicts(EC_SERVICES, issues)
+}
+
+pub(crate) fn verify_gpu_clock_ownership() -> Result<(), Diagnostic> {
+    let mut processes = Vec::new();
+    running_processes(&mut processes)?;
+    if processes.iter().any(|name| matches!(*name, "MSIAfterburner.exe" | "gpuControl.exe")) {
+        return Err(Diagnostic::conflict("NVML clock offsets", "another GPU OC controller is active"));
+    }
+    Ok(())
 }
 
 fn query_conflicts(services: &[&'static str], issues: &mut Vec<Diagnostic>) -> ConflictReport {

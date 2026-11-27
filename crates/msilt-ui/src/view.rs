@@ -11,8 +11,9 @@ use std::collections::VecDeque;
 
 use msilt_core::{
     AutomationRuleView, CapabilityFlags, ControlChange, DaemonStatus, EcWriteStatus, FanChannel,
-    FanMode, GpuMuxMode, OemInventory, OemItemKind, OemPackageId, OemScope, PerformanceMode,
-    PowerSource, StartupMode, StartupStatus, SystemSnapshot, TelemetrySample,
+    FanMode, GpuMuxMode, KeyboardEffect, KeyboardSpeed, OemInventory, OemItemKind, OemPackageId,
+    OemScope, PerformanceMode, PowerSource, StartupMode, StartupStatus, SystemSnapshot,
+    TelemetrySample,
 };
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
 
@@ -145,6 +146,13 @@ pub fn can_submit(snapshot: &SystemSnapshot, change: &ControlChange) -> bool {
         ControlChange::SetCoolerBoost { .. } => true,
         ControlChange::SetDisplayBrightness { .. } => h.display_brightness_percent.is_some(),
         ControlChange::SetKeyboardLighting { .. } => true,
+        ControlChange::SetGpuClockOffset { core_mhz, mem_mhz } => {
+            let Some(offset) = h.gpu_clock_offset else { return false; };
+            let in_range = (offset.core_min_mhz..=offset.core_max_mhz).contains(core_mhz)
+                && (offset.mem_min_mhz..=offset.mem_max_mhz).contains(mem_mhz);
+            let power_ok = (*core_mhz == 0 && *mem_mhz == 0) || h.power_source == Some(PowerSource::Ac);
+            in_range && power_ok
+        }
         _ => false,
     }
 }
@@ -238,8 +246,29 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
     state.set_cap_keyboard(capability(snapshot, CapabilityFlags::KEYBOARD_LIGHTING));
     state.set_cap_mux(capability(snapshot, CapabilityFlags::GPU_MUX));
     state.set_cap_telemetry(snapshot.capabilities.contains(CapabilityFlags::TELEMETRY));
+    state.set_cap_gpu_oc(capability(snapshot, CapabilityFlags::GPU_CLOCK_OFFSET) && hardware.gpu_clock_offset.is_some());
     state.set_ec_write_status(ec_index(snapshot.ec_write_status));
     state.set_ec_writable(snapshot.ec_write_status == EcWriteStatus::Enabled);
+
+    if let Some(oc) = hardware.gpu_clock_offset {
+        state.set_gpu_oc_supported(true);
+        state.set_gpu_oc_core(i32::from(oc.core_mhz));
+        state.set_gpu_oc_mem(i32::from(oc.mem_mhz));
+        state.set_gpu_oc_core_min(i32::from(oc.core_min_mhz));
+        state.set_gpu_oc_core_max(i32::from(oc.core_max_mhz));
+        state.set_gpu_oc_mem_min(i32::from(oc.mem_min_mhz));
+        state.set_gpu_oc_mem_max(i32::from(oc.mem_max_mhz));
+        state.set_gpu_oc_active(oc.core_mhz != 0 || oc.mem_mhz != 0);
+    } else {
+        state.set_gpu_oc_supported(false);
+        state.set_gpu_oc_core(0);
+        state.set_gpu_oc_mem(0);
+        state.set_gpu_oc_core_min(0);
+        state.set_gpu_oc_core_max(200);
+        state.set_gpu_oc_mem_min(0);
+        state.set_gpu_oc_mem_max(200);
+        state.set_gpu_oc_active(false);
+    }
 
     state.set_board_id(hardware.identity.board_id.clone().unwrap_or_else(|| "—".into()).into());
     state.set_ec_firmware(hardware.identity.ec_firmware.clone().unwrap_or_else(|| "—".into()).into());
@@ -514,7 +543,7 @@ pub fn apply_curve_flags(state: &AppState<'_>, curves: &[CurveEditor; 2], channe
 pub fn apply_zones(state: &AppState<'_>, zones: &ZoneEditor, dark: bool) {
     let _ = dark;
     let colors = zones
-        .scaled()
+        .display_colors()
         .iter()
         .map(|c| Color::from_rgb_u8(c.r, c.g, c.b))
         .collect::<Vec<Color>>();
@@ -523,7 +552,19 @@ pub fn apply_zones(state: &AppState<'_>, zones: &ZoneEditor, dark: bool) {
     let pure = zones.pure_hue_rgb();
     sync_vec_model(state.get_zones(), colors, |m| state.set_zones(m));
     sync_vec_model(state.get_zone_selected(), zones.selected().to_vec(), |m| state.set_zone_selected(m));
+    state.set_zone_selected_count(zones.selected_count() as i32);
     state.set_zone_brightness(i32::from(zones.brightness()));
+    state.set_zone_effect(match zones.effect() {
+        KeyboardEffect::Static => 0,
+        KeyboardEffect::Breathing => 1,
+        KeyboardEffect::ColorCycle => 2,
+        KeyboardEffect::Wave => 3,
+    });
+    state.set_zone_speed(match zones.speed() {
+        KeyboardSpeed::Slow => 0,
+        KeyboardSpeed::Medium => 1,
+        KeyboardSpeed::Fast => 2,
+    });
     state.set_zone_color_hex(format!("#{:02X}{:02X}{:02X}", active.r, active.g, active.b).into());
     state.set_zone_hue(h);
     state.set_zone_sat(s);
@@ -556,6 +597,15 @@ pub fn apply_telemetry(state: &AppState<'_>, sample: &TelemetrySample, age_ms: u
     state.set_cpu_duty(sample.cpu_reported_duty_percent.map_or(-1, i32::from));
     state.set_gpu_duty(sample.gpu_reported_duty_percent.map_or(-1, i32::from));
     state.set_gpu_power_mw(sample.gpu_power_mw.map_or(-1, |mw| mw.min(i32::MAX as u32) as i32));
+    state.set_gpu_power_limit_mw(sample.gpu_power_limit_mw.map_or(-1, |mw| mw.min(i32::MAX as u32) as i32));
+    state.set_cpu_util(sample.cpu_utilization_percent.map_or(-1, i32::from));
+    state.set_mem_used_mb(sample.memory_used_mb.map_or(-1, |mb| mb.min(i32::MAX as u32) as i32));
+    state.set_mem_total_mb(sample.memory_total_mb.map_or(-1, |mb| mb.min(i32::MAX as u32) as i32));
+    state.set_gpu_util(sample.gpu_utilization_percent.map_or(-1, i32::from));
+    state.set_gpu_clock_mhz(sample.gpu_clock_mhz.map_or(-1, i32::from));
+    state.set_gpu_mem_clock_mhz(sample.gpu_mem_clock_mhz.map_or(-1, i32::from));
+    state.set_gpu_vram_used_mb(sample.gpu_vram_used_mb.map_or(-1, |mb| mb.min(i32::MAX as u32) as i32));
+    state.set_gpu_vram_total_mb(sample.gpu_vram_total_mb.map_or(-1, |mb| mb.min(i32::MAX as u32) as i32));
     state.set_telemetry_age(format_age(age_ms).into());
 }
 

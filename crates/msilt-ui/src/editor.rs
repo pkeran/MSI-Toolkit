@@ -12,8 +12,8 @@
 //!   * dragging edits a *preview*; only `apply` turns it into one IPC command.
 
 use msilt_core::{
-    FanChannel, FanCurve, FanPoint, FanState, Rgb8, FAN_POINT_COUNT, KEYBOARD_ZONE_COUNT,
-    MAX_FAN_DUTY_PERCENT,
+    FanChannel, FanCurve, FanPoint, FanState, KeyboardEffect, KeyboardSpeed, Rgb8, FAN_POINT_COUNT,
+    KEYBOARD_ZONE_COUNT, MAX_FAN_DUTY_PERCENT,
 };
 
 /// One fixed temperature knot with the verified factory duty floor.
@@ -234,12 +234,14 @@ impl CurveEditor {
 
 // ── keyboard zones ──────────────────────────────────────────────────────────
 
-/// 24-zone local selection + colour model (with continuous HSV picker state).
+/// 24-zone local selection + colour + effect model (with continuous HSV picker state).
 #[derive(Debug, Clone)]
 pub struct ZoneEditor {
     colors: [Rgb8; KEYBOARD_ZONE_COUNT],
     selected: [bool; KEYBOARD_ZONE_COUNT],
     brightness: u8,
+    effect: KeyboardEffect,
+    speed: KeyboardSpeed,
     hue: f32,
     sat: f32,
     val: f32,
@@ -253,6 +255,13 @@ pub const ZONE_PRESETS: [[Rgb8; KEYBOARD_ZONE_COUNT]; 4] = [
     [Rgb8 { r: 0, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT],
 ];
 
+// Official MS-1603 24-zone physical column hue positions (0..360 deg left-to-right)
+// matching UC_Panel_24Zone Path_Zone1..11 (top) and Path_Zone12..24 (bottom).
+const ZONE_COLUMN_HUE: [f32; KEYBOARD_ZONE_COUNT] = [
+    0.0, 28.0, 62.0, 102.0, 142.0, 182.0, 222.0, 260.0, 290.0, 315.0, 340.0, // Z1..Z11 top
+    0.0, 22.0, 44.0, 66.0, 92.0, 128.0, 168.0, 210.0, 248.0, 274.0, 298.0, 320.0, 342.0, // Z12..Z24 bottom
+];
+
 impl Default for ZoneEditor {
     fn default() -> Self {
         Self::new(None)
@@ -261,14 +270,15 @@ impl Default for ZoneEditor {
 
 impl ZoneEditor {
     pub fn new(zones: Option<&[Rgb8; KEYBOARD_ZONE_COUNT]>) -> Self {
-        let mut selected = [false; KEYBOARD_ZONE_COUNT];
-        selected[0] = true;
+        let selected = [false; KEYBOARD_ZONE_COUNT];
         let colors = zones.copied().unwrap_or(ZONE_PRESETS[0]);
         let (hue, sat, val) = rgb_to_hsv(colors[0]);
         Self {
             colors,
             selected,
             brightness: 3,
+            effect: KeyboardEffect::Static,
+            speed: KeyboardSpeed::Medium,
             hue,
             sat,
             val,
@@ -291,6 +301,31 @@ impl ZoneEditor {
         self.brightness = level.clamp(0, 3) as u8;
     }
 
+    pub fn effect(&self) -> KeyboardEffect {
+        self.effect
+    }
+
+    pub fn set_effect(&mut self, effect: KeyboardEffect) {
+        self.effect = effect;
+    }
+
+    pub fn speed(&self) -> KeyboardSpeed {
+        self.speed
+    }
+
+    pub fn set_speed(&mut self, speed: KeyboardSpeed) {
+        self.speed = speed;
+    }
+
+    pub fn sync_mode(&mut self, effect: Option<KeyboardEffect>, speed: Option<KeyboardSpeed>) {
+        if let Some(effect) = effect {
+            self.effect = effect;
+        }
+        if let Some(speed) = speed {
+            self.speed = speed;
+        }
+    }
+
     pub fn selected_count(&self) -> usize {
         self.selected.iter().filter(|s| **s).count()
     }
@@ -304,7 +339,7 @@ impl ZoneEditor {
         self.val = v;
     }
 
-    /// Exclusive select, or additive toggle when `additive`.
+    /// Additive multi-select toggle when `additive`, or exclusive select otherwise.
     pub fn toggle(&mut self, index: usize, additive: bool) {
         if index >= KEYBOARD_ZONE_COUNT {
             return;
@@ -331,7 +366,23 @@ impl ZoneEditor {
 
     pub fn apply_preset(&mut self, kind: usize) {
         if let Some(preset) = ZONE_PRESETS.get(kind) {
-            self.colors = *preset;
+            if kind == 3 {
+                self.colors = *preset;
+                self.effect = KeyboardEffect::Static;
+            } else {
+                let count = self.selected_count();
+                for index in 0..KEYBOARD_ZONE_COUNT {
+                    if count == 0 || self.selected[index] {
+                        self.colors[index] = preset[index];
+                    }
+                }
+                if self.brightness == 0 {
+                    self.brightness = 3;
+                }
+                if matches!(self.effect, KeyboardEffect::ColorCycle | KeyboardEffect::Wave) {
+                    self.effect = KeyboardEffect::Static;
+                }
+            }
             self.sync_hsv_from_active();
         }
     }
@@ -344,6 +395,12 @@ impl ZoneEditor {
             if count == 0 || self.selected[index] {
                 self.colors[index] = color;
             }
+        }
+        if self.brightness == 0 && (color.r > 0 || color.g > 0 || color.b > 0) {
+            self.brightness = 3;
+        }
+        if matches!(self.effect, KeyboardEffect::ColorCycle | KeyboardEffect::Wave) {
+            self.effect = KeyboardEffect::Static;
         }
         self.sync_hsv_from_active();
     }
@@ -359,6 +416,12 @@ impl ZoneEditor {
             if count == 0 || self.selected[index] {
                 self.colors[index] = color;
             }
+        }
+        if self.brightness == 0 && (color.r > 0 || color.g > 0 || color.b > 0) {
+            self.brightness = 3;
+        }
+        if matches!(self.effect, KeyboardEffect::ColorCycle | KeyboardEffect::Wave) {
+            self.effect = KeyboardEffect::Static;
         }
     }
 
@@ -378,13 +441,35 @@ impl ZoneEditor {
             .map_or(self.colors[0], |index| self.colors[index])
     }
 
-    /// Applies the software brightness scale (`rgb * level / 3`).
+    /// 1:1 visual colors shown on the simulated keyboard:
+    /// - brightness 0 -> unlit black;
+    /// - ColorCycle / Wave -> full rainbow spectrum across the physical columns;
+    /// - Static / Breathing -> exact unscaled RGB matching the color picker 1:1.
+    pub fn display_colors(&self) -> [Rgb8; KEYBOARD_ZONE_COUNT] {
+        if self.brightness == 0 {
+            return [Rgb8 { r: 0, g: 0, b: 0 }; KEYBOARD_ZONE_COUNT];
+        }
+        match self.effect {
+            KeyboardEffect::ColorCycle | KeyboardEffect::Wave => {
+                std::array::from_fn(|i| hsv_to_rgb(ZONE_COLUMN_HUE[i], 0.92, 1.0))
+            }
+            KeyboardEffect::Static | KeyboardEffect::Breathing => self.colors,
+        }
+    }
+
+    /// Applies the perceptual sRGB brightness scale sent to MS-1603 HID
+    /// (`[0, 128, 196, 255]` so HAL LED gamma yields ~0 / 16 / 50 / 100% light).
     pub fn scaled(&self) -> [Rgb8; KEYBOARD_ZONE_COUNT] {
-        let level = u32::from(self.brightness);
+        const SCALE: [u32; 4] = [0, 128, 196, 255];
+        let s = SCALE[usize::from(self.brightness.min(3))];
+        if matches!(self.effect, KeyboardEffect::ColorCycle | KeyboardEffect::Wave) {
+            let v = s as u8;
+            return [Rgb8 { r: v, g: v, b: v }; KEYBOARD_ZONE_COUNT];
+        }
         self.colors.map(|c| Rgb8 {
-            r: ((u32::from(c.r) * level) / 3) as u8,
-            g: ((u32::from(c.g) * level) / 3) as u8,
-            b: ((u32::from(c.b) * level) / 3) as u8,
+            r: ((u32::from(c.r) * s + 127) / 255) as u8,
+            g: ((u32::from(c.g) * s + 127) / 255) as u8,
+            b: ((u32::from(c.b) * s + 127) / 255) as u8,
         })
     }
 }
@@ -556,16 +641,35 @@ mod tests {
     }
 
     #[test]
-    fn zone_toggle_is_exclusive_without_the_additive_flag() {
+    fn zone_toggle_supports_multi_select_and_exclusive_modes() {
         let mut zones = ZoneEditor::default();
-        assert_eq!(zones.selected_count(), 1);
-        zones.toggle(7, false);
-        assert!(zones.selected()[7]);
-        assert_eq!(zones.selected_count(), 1);
+        assert_eq!(zones.selected_count(), 0);
+        zones.toggle(7, true);
         zones.toggle(9, true);
         assert_eq!(zones.selected_count(), 2);
+        assert!(zones.selected()[7] && zones.selected()[9]);
         zones.toggle(9, true);
         assert_eq!(zones.selected_count(), 1);
+        zones.toggle(3, false);
+        assert!(zones.selected()[3]);
+        assert_eq!(zones.selected_count(), 1);
+    }
+
+    #[test]
+    fn display_colors_match_unscaled_rgb_and_preview_rainbow_modes() {
+        let mut zones = ZoneEditor::default();
+        let cyan = Rgb8 { r: 0x35, g: 0xC8, b: 0xFF };
+        zones.paint(cyan);
+        zones.set_brightness(1);
+        // Simulated keyboard preserves exact 1:1 visual color while hardware output scales.
+        assert_eq!(zones.display_colors()[0], cyan);
+        assert_eq!(zones.scaled()[0], Rgb8 { r: 27, g: 100, b: 128 });
+        zones.set_effect(KeyboardEffect::Wave);
+        assert_ne!(zones.display_colors()[0], zones.display_colors()[5]);
+        assert_eq!(zones.scaled()[0], Rgb8 { r: 128, g: 128, b: 128 });
+        zones.set_brightness(0);
+        assert_eq!(zones.display_colors()[0], Rgb8 { r: 0, g: 0, b: 0 });
+        assert_eq!(zones.scaled()[0], Rgb8 { r: 0, g: 0, b: 0 });
     }
 
     #[test]
