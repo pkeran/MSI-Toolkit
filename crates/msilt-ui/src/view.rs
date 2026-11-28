@@ -10,10 +10,10 @@
 use std::collections::VecDeque;
 
 use msilt_core::{
-    AutomationRuleView, CapabilityFlags, ControlChange, DaemonStatus, EcWriteStatus, FanChannel,
-    FanMode, GpuMuxMode, KeyboardEffect, KeyboardSpeed, OemInventory, OemItemKind, OemPackageId,
-    OemScope, PerformanceMode, PowerSource, StartupMode, StartupStatus, SystemSnapshot,
-    TelemetrySample,
+    AutomationRuleView, BatteryDetail, BatterySample, CapabilityFlags, ControlChange, DaemonStatus,
+    EcWriteStatus, FanChannel, FanMode, GpuMuxMode, KeyboardEffect, KeyboardSpeed, OemInventory,
+    OemItemKind, OemPackageId, OemScope, PerformanceMode, PowerSource, StartupMode, StartupStatus,
+    SystemSnapshot, TelemetrySample,
 };
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
 
@@ -371,7 +371,11 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
         state.set_keyboard_conflict(conflict);
     }
 
-    if let Some(detail) = hardware.battery_detail {
+    apply_battery_detail(state, hardware.battery_detail);
+}
+
+pub fn apply_battery_detail(state: &AppState<'_>, detail: Option<BatteryDetail>) {
+    if let Some(detail) = detail {
         state.set_battery_designed(detail.designed_capacity_mwh.map_or_else(|| "—".into(), |mwh| format!("{:.1} Wh", f64::from(mwh) / 1000.0)).into());
         state.set_battery_full(detail.full_charged_capacity_mwh.map_or_else(|| "—".into(), |mwh| format!("{:.1} Wh", f64::from(mwh) / 1000.0)).into());
         state.set_battery_health(detail.health_tenths_percent.map_or_else(|| "—".into(), |t| format!("{:.1}%", f64::from(t) / 10.0)).into());
@@ -388,6 +392,21 @@ pub fn apply_snapshot(state: &AppState<'_>, snapshot: &SystemSnapshot, demo: boo
         state.set_battery_voltage("—".into());
         state.set_battery_rate("—".into());
         state.set_battery_cycles("—".into());
+    }
+}
+
+pub fn apply_battery(state: &AppState<'_>, sample: &BatterySample) {
+    if let Some(source) = sample.power_source {
+        state.set_power_source(match source {
+            PowerSource::Ac => 0,
+            PowerSource::Battery => 1,
+        });
+    }
+    if let Some(percent) = sample.battery_percent {
+        state.set_battery_percent(i32::from(percent));
+    }
+    if sample.detail.is_some() {
+        apply_battery_detail(state, sample.detail);
     }
 }
 

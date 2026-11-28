@@ -7,9 +7,9 @@ use std::{
 };
 
 use msilt_core::{
-    ClientKind, ErrorCode, FRAME_HEADER_LEN, IpcError, IpcEvent, IpcMessage, IpcReply, IpcRequest,
-    IpcResponse, IpcResult, MAX_FRAME_PAYLOAD, OsdKind, Subscriptions, SystemSnapshot,
-    TelemetrySample,
+    BatterySample, ClientKind, ErrorCode, FRAME_HEADER_LEN, IpcError, IpcEvent, IpcMessage,
+    IpcReply, IpcRequest, IpcResponse, IpcResult, MAX_FRAME_PAYLOAD, OsdKind, Subscriptions,
+    SystemSnapshot, TelemetrySample,
 };
 use msilt_hal::daemon_wire::{Outgoing, decode_request, encode_reply};
 use windows::{
@@ -65,6 +65,7 @@ struct Connection {
     response: Option<IpcResponse>,
     state: Option<Arc<SystemSnapshot>>,
     sample: Option<TelemetrySample>,
+    battery: Option<BatterySample>,
     osd: Option<(u64, OsdKind)>,
 }
 
@@ -84,6 +85,7 @@ impl Connection {
             response: None,
             state: None,
             sample: None,
+            battery: None,
             osd: None,
         }
     }
@@ -129,6 +131,11 @@ impl Connection {
                 self.sample
                     .take()
                     .map(|sample| IpcEvent::TelemetryTick { sample })
+            })
+            .or_else(|| {
+                self.battery
+                    .take()
+                    .map(|sample| IpcEvent::BatteryTick { sample })
             })
             .map(IpcMessage::Event)
     }
@@ -558,6 +565,9 @@ impl PipeServer {
             if !topics.telemetry {
                 connection.sample = None;
             }
+            if !topics.battery {
+                connection.battery = None;
+            }
         }
     }
 
@@ -570,6 +580,12 @@ impl PipeServer {
     pub(crate) fn wants_gpu_telemetry(&self) -> bool {
         self.active().any(|connection| {
             connection.topics.gpu_telemetry && connection.client == Some((ClientKind::Ui, true))
+        })
+    }
+
+    pub(crate) fn wants_battery(&self) -> bool {
+        self.active().any(|connection| {
+            connection.topics.battery && connection.client == Some((ClientKind::Ui, true))
         })
     }
 
@@ -617,6 +633,18 @@ impl PipeServer {
     pub(crate) fn clear_samples(&mut self) {
         for connection in self.active_mut() {
             connection.sample = None;
+        }
+    }
+
+    pub(crate) fn send_battery(&mut self, sample: BatterySample) {
+        for connection in self.active_mut().filter(|c| c.topics.battery) {
+            connection.battery = Some(sample);
+        }
+    }
+
+    pub(crate) fn clear_battery(&mut self) {
+        for connection in self.active_mut() {
+            connection.battery = None;
         }
     }
 

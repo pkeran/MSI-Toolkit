@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{AuthorizedEcWrite, CapabilityFlags, ControlChange, ControlTarget, ErrorCode, HardwareState, KeyboardEffect, KeyboardSpeed, OsdKind, PowerSource, Rgb8, SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT};
+use crate::{AuthorizedEcWrite, BatterySample, CapabilityFlags, ControlChange, ControlTarget, ErrorCode, HardwareState, KeyboardEffect, KeyboardSpeed, OsdKind, PowerSource, Rgb8, SystemSnapshot, TelemetrySample, KEYBOARD_ZONE_COUNT};
 
 pub type HalResult<T> = Result<T, HalError>;
 
@@ -31,6 +31,9 @@ pub struct HardwareReport {
 pub trait HardwareRead {
     fn inspect(&mut self) -> HalResult<HardwareReport>;
     fn sample_telemetry(&mut self) -> HalResult<TelemetrySample>;
+    fn sample_battery(&mut self) -> HalResult<BatterySample> {
+        Err(HalError::Unsupported)
+    }
     fn set_gpu_telemetry(&mut self, _enabled: bool) {}
 }
 

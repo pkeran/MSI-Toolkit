@@ -2,8 +2,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use msilt_core::{
-    AuthorizedEcWrite, BatteryDetail, CapabilityFlags, EcRegisterIo, FanChannel, GpuMuxMode,
-    GpuMuxState, HalError, HalResult, HardwareRead, HardwareReport, HardwareState,
+    AuthorizedEcWrite, BatteryDetail, BatterySample, CapabilityFlags, EcRegisterIo, FanChannel,
+    GpuMuxMode, GpuMuxState, HalError, HalResult, HardwareRead, HardwareReport, HardwareState,
     KEYBOARD_ZONE_COUNT, KeyboardEffect, KeyboardSpeed, PlatformControl, Rgb8, TelemetrySample,
 };
 use serde::Serialize;
@@ -193,7 +193,6 @@ impl WindowsHal {
         let mut diagnostics = Vec::new();
         let sampled_at_unix_ms = timestamp(&mut diagnostics);
         static IDENTITY: Lane = OnceLock::new();
-        static BATTERY: Lane = OnceLock::new();
 
         let (identity, conflicts) = observe(
             &IDENTITY,
@@ -312,6 +311,7 @@ impl WindowsHal {
 }
 
 type Lane = OnceLock<Result<SerialExecutor<()>, Diagnostic>>;
+static BATTERY: Lane = OnceLock::new();
 static DISPLAY: Lane = OnceLock::new();
 static HID: Lane = OnceLock::new();
 
@@ -658,6 +658,31 @@ impl HardwareRead for WindowsHal {
                 .map_or(HalError::Unavailable, HalError::from));
         }
         Ok(sample)
+    }
+
+    fn sample_battery(&mut self) -> HalResult<BatterySample> {
+        self.last_diagnostics.clear();
+        let mut diagnostics = Vec::new();
+        let report = observe(
+            &BATTERY,
+            "battery interrogation",
+            2,
+            &mut diagnostics,
+            battery::inspect,
+        );
+        self.last_diagnostics = diagnostics;
+        let detail = report.packs.first().map(battery_detail);
+        if report.power_source.is_none() && report.system_percent.is_none() && detail.is_none() {
+            return Err(self
+                .last_diagnostics
+                .first()
+                .map_or(HalError::Unavailable, HalError::from));
+        }
+        Ok(BatterySample {
+            power_source: report.power_source,
+            battery_percent: report.system_percent,
+            detail,
+        })
     }
 
     fn set_gpu_telemetry(&mut self, enabled: bool) {

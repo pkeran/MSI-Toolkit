@@ -495,6 +495,17 @@ pub struct BatteryDetail {
     pub charging: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatterySample {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_source: Option<PowerSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<BatteryDetail>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HardwareState {

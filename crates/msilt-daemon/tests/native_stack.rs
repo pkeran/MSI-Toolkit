@@ -356,6 +356,7 @@ fn native_readonly_hal_and_rule_engine_cross_process() {
         telemetry: true,
         osd: false,
         gpu_telemetry: false,
+        battery: false,
     });
     let mut ticks = Vec::new();
     while ticks.len() < 3 {

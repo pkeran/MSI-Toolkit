@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    AppConfig, AutomationPreset, AutomationRuleView, ControlChange, ControlError, ControlTarget,
-    HalError, OemAction, OemInventory, OsdKind, StartupStatus, SystemSnapshot, TelemetrySample,
-    TransactionFailure, WriteGuardError, model::str_enum_serde,
+    AppConfig, AutomationPreset, AutomationRuleView, BatterySample, ControlChange, ControlError,
+    ControlTarget, HalError, OemAction, OemInventory, OsdKind, StartupStatus, SystemSnapshot,
+    TelemetrySample, TransactionFailure, WriteGuardError, model::str_enum_serde,
 };
 
 pub const PIPE_NAME: &str = r"\\.\pipe\MSIToolkit-IPC-v1";
@@ -34,6 +34,8 @@ pub struct Subscriptions {
     pub osd: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub gpu_telemetry: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub battery: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -42,7 +44,7 @@ fn is_false(value: &bool) -> bool {
 
 impl Subscriptions {
     pub const fn validate_for(self, client: ClientKind) -> Result<(), ErrorCode> {
-        if (self.telemetry || self.gpu_telemetry) && matches!(client, ClientKind::Cli) {
+        if (self.telemetry || self.gpu_telemetry || self.battery) && matches!(client, ClientKind::Cli) {
             return Err(ErrorCode::Unsupported);
         }
         Ok(())
@@ -219,6 +221,7 @@ impl From<&WriteGuardError> for ErrorCode {
 pub enum IpcEvent {
     StateChanged { snapshot: SystemSnapshot },
     TelemetryTick { sample: TelemetrySample },
+    BatteryTick { sample: BatterySample },
     OsdNotify { revision: u64, kind: OsdKind },
 }
 
@@ -448,6 +451,9 @@ mod tests {
         let topics = Subscriptions { gpu_telemetry: true, ..Subscriptions::default() };
         assert_eq!(topics.validate_for(ClientKind::Ui), Ok(()));
         assert_eq!(topics.validate_for(ClientKind::Cli), Err(ErrorCode::Unsupported));
+        let topics = Subscriptions { battery: true, ..Subscriptions::default() };
+        assert_eq!(topics.validate_for(ClientKind::Ui), Ok(()));
+        assert_eq!(topics.validate_for(ClientKind::Cli), Err(ErrorCode::Unsupported));
     }
 
     #[test]
@@ -455,10 +461,16 @@ mod tests {
         let legacy = r#"{"state":true,"telemetry":true,"osd":false}"#;
         let mut topics: Subscriptions = serde_json::from_str(legacy).unwrap();
         assert!(!topics.gpu_telemetry);
+        assert!(!topics.battery);
         assert_eq!(serde_json::to_string(&topics).unwrap(), legacy);
         topics.gpu_telemetry = true;
         let json = serde_json::to_string(&topics).unwrap();
         assert_eq!(json, r#"{"state":true,"telemetry":true,"osd":false,"gpuTelemetry":true}"#);
+        assert_eq!(serde_json::from_str::<Subscriptions>(&json).unwrap(), topics);
+        topics.gpu_telemetry = false;
+        topics.battery = true;
+        let json = serde_json::to_string(&topics).unwrap();
+        assert_eq!(json, r#"{"state":true,"telemetry":true,"osd":false,"battery":true}"#);
         assert_eq!(serde_json::from_str::<Subscriptions>(&json).unwrap(), topics);
     }
 

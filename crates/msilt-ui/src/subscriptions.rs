@@ -1,7 +1,7 @@
 //! Acknowledged, full-replacement subscriptions. The first request is state-only.
 use msilt_core::Subscriptions;
 
-pub const STATE_ONLY: Subscriptions = Subscriptions { state: true, telemetry: false, osd: false, gpu_telemetry: false };
+pub const STATE_ONLY: Subscriptions = Subscriptions { state: true, telemetry: false, osd: false, gpu_telemetry: false, battery: false };
 
 pub fn for_page(page: i32, paused: bool, gpu_telemetry: bool) -> Subscriptions {
     let telemetry = matches!(page, 0 | 1) || (page == 6 && !paused);
@@ -10,6 +10,7 @@ pub fn for_page(page: i32, paused: bool, gpu_telemetry: bool) -> Subscriptions {
         telemetry,
         osd: page == 6,
         gpu_telemetry: telemetry && gpu_telemetry,
+        battery: page == 3,
     }
 }
 
@@ -51,6 +52,7 @@ mod tests {
                     assert_eq!(topics.telemetry, expected_telemetry);
                     assert_eq!(topics.osd, page == 6);
                     assert_eq!(topics.gpu_telemetry, expected_telemetry && gpu);
+                    assert_eq!(topics.battery, page == 3);
                 }
             }
         }
@@ -68,7 +70,13 @@ mod tests {
         assert_eq!(plan.next(for_page(1, false, false)), None);
         assert_eq!(plan.next(for_page(2, false, false)), Some(STATE_ONLY));
         assert!(plan.acknowledge(STATE_ONLY));
-        for page in [2, 3, 4, 5, 7, 7] { assert_eq!(plan.next(for_page(page, false, false)), None); }
+        for page in [2, 4, 5, 7, 7] { assert_eq!(plan.next(for_page(page, false, false)), None); }
+        let battery = for_page(3, false, false);
+        assert!(battery.battery && !battery.telemetry && !battery.gpu_telemetry);
+        assert_eq!(plan.next(battery), Some(battery));
+        assert!(plan.acknowledge(battery));
+        assert_eq!(plan.next(for_page(4, false, false)), Some(STATE_ONLY));
+        assert!(plan.acknowledge(STATE_ONLY));
     }
 
     #[test]

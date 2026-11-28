@@ -32,6 +32,7 @@ const MAX_TRANSACTIONS: usize = 32;
 const MAX_ACTIONS: usize = 32;
 const MAX_ENGINE_EVENTS: usize = 64;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const BATTERY_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const INSPECT_BUDGET: Duration = Duration::from_secs(10);
 const SAMPLE_BUDGET: Duration = Duration::from_secs(3);
 const CONTROL_BUDGET: Duration = Duration::from_secs(12);
@@ -66,6 +67,7 @@ pub(crate) struct Host {
 pub(crate) struct Diagnostics {
     pub(crate) listening: std::sync::atomic::AtomicBool,
     pub(crate) telemetry_armed: std::sync::atomic::AtomicBool,
+    pub(crate) battery_armed: std::sync::atomic::AtomicBool,
     pub(crate) queued: std::sync::atomic::AtomicUsize,
 }
 
@@ -127,6 +129,7 @@ pub(crate) fn run(
         processed_engine_deadline: None,
         started: Instant::now(),
         telemetry: Telemetry::default(),
+        battery_telemetry: BatteryTelemetry::default(),
         gpu_telemetry_enabled: false,
         inbox,
         window_actions,
@@ -213,6 +216,7 @@ enum Inflight {
         source: Origin,
     },
     Sample(u64),
+    SampleBattery(u64),
 }
 
 struct Flight {
@@ -252,6 +256,31 @@ impl Telemetry {
     }
 }
 
+#[derive(Default)]
+struct BatteryTelemetry {
+    next: Option<Instant>,
+    generation: u64,
+}
+
+impl BatteryTelemetry {
+    fn set(&mut self, active: bool, now: Instant) -> bool {
+        if self.next.is_some() == active {
+            return false;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.next = active.then_some(now);
+        true
+    }
+
+    fn due(&mut self, now: Instant) -> bool {
+        if self.next.is_none_or(|next| now < next) {
+            return false;
+        }
+        self.next = Some(now + BATTERY_SAMPLE_INTERVAL);
+        true
+    }
+}
+
 struct Coordinator {
     port: Port,
     pipe: PipeServer,
@@ -284,6 +313,7 @@ struct Coordinator {
     processed_engine_deadline: Option<u64>,
     started: Instant,
     telemetry: Telemetry,
+    battery_telemetry: BatteryTelemetry,
     gpu_telemetry_enabled: bool,
     inbox: Arc<Inbox>,
     window_actions: Receiver<UserEvent>,
@@ -321,11 +351,17 @@ impl Coordinator {
         let result = self.dispatch_loop();
         self.timer.set(None);
         self.telemetry.set(false, Instant::now());
+        self.battery_telemetry.set(false, Instant::now());
         self.executor.set_gpu_telemetry(false);
         #[cfg(test)]
-        self.diagnostics
-            .telemetry_armed
-            .store(false, std::sync::atomic::Ordering::Release);
+        {
+            self.diagnostics
+                .telemetry_armed
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.diagnostics
+                .battery_armed
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         self.queue.clear();
         self.greetings.clear();
         Arc::make_mut(&mut self.snapshot).status = DaemonStatus::Stopping;
@@ -358,10 +394,11 @@ impl Coordinator {
             }
             self.sync_telemetry(now);
             let sample_due = self.telemetry.due(now);
+            let battery_due = self.battery_telemetry.due(now);
             self.flush_greetings(now);
             self.process_deadlines(now);
             self.run_engine(now);
-            self.schedule(now, sample_due);
+            self.schedule(now, sample_due, battery_due);
             self.pipe.service(now)?;
             let now = Instant::now();
             self.sync_telemetry(now);
@@ -483,7 +520,9 @@ impl Coordinator {
                 })
             }
             IpcCommand::SetSubscriptions { topics } => {
-                if topics.validate_for(client).is_err() || (topics.telemetry || topics.gpu_telemetry) && !verified_ui {
+                if topics.validate_for(client).is_err()
+                    || (topics.telemetry || topics.gpu_telemetry || topics.battery) && !verified_ui
+                {
                     Err(ErrorCode::Unsupported)
                 } else {
                     self.pipe.subscriptions(peer, topics);
@@ -773,7 +812,7 @@ impl Coordinator {
         self.unlocked && !self.suspended && self.inbox.can_work()
     }
 
-    fn schedule(&mut self, now: Instant, sample_due: bool) {
+    fn schedule(&mut self, now: Instant, sample_due: bool, battery_due: bool) {
         if self.flight.is_some() || self.late_read.is_some() {
             return;
         }
@@ -892,6 +931,13 @@ impl Coordinator {
             self.submit(
                 Work::Sample,
                 Inflight::Sample(self.telemetry.generation),
+                now + SAMPLE_BUDGET,
+                None,
+            );
+        } else if battery_due {
+            self.submit(
+                Work::SampleBattery,
+                Inflight::SampleBattery(self.battery_telemetry.generation),
                 now + SAMPLE_BUDGET,
                 None,
             );
@@ -1321,6 +1367,16 @@ impl Coordinator {
                         }));
                 }
             }
+            (Inflight::SampleBattery(generation), Completion::Battery(sample)) => {
+                if let Ok(sample) = sample {
+                    if self.battery_telemetry.next.is_some()
+                        && generation == self.battery_telemetry.generation
+                        && same_epoch
+                    {
+                        self.pipe.send_battery(sample);
+                    }
+                }
+            }
             (
                 Inflight::Control {
                     source,
@@ -1540,7 +1596,8 @@ impl Coordinator {
                     self.arm_inspect_retry(now);
                 }
             }
-            (Inflight::Sample(_), Completion::Skipped(_)) => {}
+            (Inflight::Sample(_), Completion::Skipped(_))
+            | (Inflight::SampleBattery(_), Completion::Skipped(_)) => {}
             _ => {
                 self.store
                     .diagnostic("unexpected HAL completion mismatch; entering quarantine");
@@ -1583,6 +1640,15 @@ impl Coordinator {
                     self.sample_timeouts = 0;
                     self.inspect_requested = true;
                 }
+                return;
+            }
+            Inflight::SampleBattery(_) => {
+                self.store
+                    .diagnostic("watchdog: battery sample exceeded budget; awaiting worker");
+                self.late_read = Some(LateRead {
+                    epoch: flight.epoch,
+                    inspect: false,
+                });
                 return;
             }
             Inflight::System { source, .. } => {
@@ -1882,10 +1948,27 @@ impl Coordinator {
                 self.inspect_requested = true;
             }
         }
+        let battery_active = self.active() && !self.quarantine && self.pipe.wants_battery();
+        if self.battery_telemetry.set(battery_active, now) && !battery_active {
+            self.pipe.clear_battery();
+            if let Some(Flight {
+                kind: Inflight::SampleBattery(_),
+                ticket,
+                ..
+            }) = &self.flight
+            {
+                ticket.cancel();
+            }
+        }
         #[cfg(test)]
-        self.diagnostics
-            .telemetry_armed
-            .store(active, std::sync::atomic::Ordering::Release);
+        {
+            self.diagnostics
+                .telemetry_armed
+                .store(active, std::sync::atomic::Ordering::Release);
+            self.diagnostics
+                .battery_armed
+                .store(battery_active, std::sync::atomic::Ordering::Release);
+        }
     }
 
     fn now_ms(&self, now: Instant) -> u64 {
@@ -1915,6 +1998,7 @@ impl Coordinator {
         [
             self.pipe.next_deadline(),
             self.telemetry.next,
+            self.battery_telemetry.next,
             self.inspect_retry_at,
             self.pending_fan_restore_at,
             self.boot_gpu_oc_at,

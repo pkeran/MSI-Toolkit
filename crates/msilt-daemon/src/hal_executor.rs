@@ -1047,6 +1047,7 @@ pub(crate) enum Work {
         expected: HardwareIdentity,
     },
     Sample,
+    SampleBattery,
     SetGpuTelemetry(bool),
     SystemTools {
         task: SystemTask,
@@ -1073,6 +1074,7 @@ pub(crate) enum Completion {
     Inspect(HalResult<Observation>, Option<u16>),
     Applied(Applied),
     Sample(HalResult<TelemetrySample>),
+    Battery(HalResult<BatterySample>),
     SystemTools(Result<IpcReply, ErrorCode>),
     Skipped(ErrorCode),
 }
@@ -1254,6 +1256,9 @@ impl Executor {
                                     }
                                     Work::Sample => {
                                         Completion::Sample(backend.device.sample_telemetry())
+                                    }
+                                    Work::SampleBattery => {
+                                        Completion::Battery(backend.device.sample_battery())
                                     }
                                     Work::SetGpuTelemetry(_) => unreachable!(),
                                     Work::SystemTools { task, backup } => {

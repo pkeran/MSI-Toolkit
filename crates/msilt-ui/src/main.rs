@@ -462,6 +462,22 @@ impl App {
         }
     }
 
+    fn apply_battery(&mut self, sample: &msilt_core::BatterySample) {
+        if let Some(source) = sample.power_source {
+            self.snapshot.hardware.power_source = Some(source);
+        }
+        if let Some(percent) = sample.battery_percent {
+            self.snapshot.hardware.battery_percent = Some(percent);
+        }
+        if let Some(detail) = sample.detail {
+            self.snapshot.hardware.battery_detail = Some(detail);
+        }
+        if let Some(ui) = self.ui.upgrade() {
+            let state = ui.global::<AppState>();
+            view::apply_battery(&state, sample);
+        }
+    }
+
     fn on_disconnect(&mut self, reason: String) {
         self.connected = false;
         self.connecting = false;
@@ -1683,6 +1699,7 @@ fn process_inbox() {
                 }
                 // 1 Hz telemetry updates ONLY scalar readouts + active trend chart (never full model rebuild).
                 IpcEvent::TelemetryTick { sample } => app.apply_telemetry(&sample),
+                IpcEvent::BatteryTick { sample } => app.apply_battery(&sample),
                 IpcEvent::OsdNotify { .. } => {}
             },
             Incoming::Message(IpcMessage::Response(response)) => {

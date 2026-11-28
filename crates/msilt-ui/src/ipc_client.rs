@@ -122,6 +122,8 @@ fn push(inbox: &Inbox, waker: &Waker, item: Incoming) {
     if let Ok(mut queue) = inbox.lock() {
         if matches!(item, Incoming::Message(IpcMessage::Event(msilt_core::IpcEvent::TelemetryTick { .. }))) {
             queue.retain(|old| !matches!(old, Incoming::Message(IpcMessage::Event(msilt_core::IpcEvent::TelemetryTick { .. }))));
+        } else if matches!(item, Incoming::Message(IpcMessage::Event(msilt_core::IpcEvent::BatteryTick { .. }))) {
+            queue.retain(|old| !matches!(old, Incoming::Message(IpcMessage::Event(msilt_core::IpcEvent::BatteryTick { .. }))));
         }
         if queue.len() >= 64 {
             queue.clear();

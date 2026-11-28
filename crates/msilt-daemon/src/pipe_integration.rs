@@ -48,6 +48,7 @@ const WAIT: Duration = Duration::from_millis(800);
 struct Counts {
     calls: AtomicU32,
     samples: AtomicU32,
+    battery_samples: AtomicU32,
     keypad_writes: AtomicU32,
     inspect_gate: Mutex<Option<Arc<Gate>>>,
     inspect_failures: AtomicU32,
@@ -147,6 +148,20 @@ impl HardwareRead for DryRun {
             gpu_vram_used_mb: gpu.then_some(1969),
             gpu_vram_total_mb: gpu.then_some(24463),
             ..Default::default()
+        })
+    }
+
+    fn sample_battery(&mut self) -> HalResult<BatterySample> {
+        let count = self.counts.battery_samples.fetch_add(1, AcqRel) + 1;
+        Ok(BatterySample {
+            power_source: Some(PowerSource::Ac),
+            battery_percent: Some(76),
+            detail: Some(BatteryDetail {
+                voltage_mv: Some(16_500 + count * 10),
+                rate_mw: Some(50_000),
+                charging: Some(true),
+                ..Default::default()
+            }),
         })
     }
 
@@ -302,6 +317,9 @@ impl Fixture {
     }
     fn armed(&self) -> bool {
         self.stats.telemetry_armed.load(Acquire)
+    }
+    fn battery_armed(&self) -> bool {
+        self.stats.battery_armed.load(Acquire)
     }
 }
 
@@ -644,6 +662,7 @@ fn real_pipe_v1_round_trip_and_last_subscriber_stops_timer() {
         osd: true,
         telemetry: false,
         gpu_telemetry: false,
+        battery: false,
     };
     let with_telemetry = Subscriptions {
         telemetry: true,
@@ -762,6 +781,52 @@ fn real_pipe_v1_round_trip_and_last_subscriber_stops_timer() {
     wait_for(WAIT, || host.armed());
     subscribe(&mut ui, state_only);
     wait_for(WAIT, || !host.armed());
+}
+
+#[test]
+fn battery_subscription_polls_only_while_subscribed_without_bumping_revision() {
+    let host = Fixture::start(None, None);
+    let mut ui = host.client();
+    let mut cli = host.client();
+    let initial = ui.hello(ClientKind::Ui);
+    cli.hello(ClientKind::Cli);
+    let battery_only = Subscriptions {
+        state: true,
+        battery: true,
+        ..Default::default()
+    };
+    let state_only = Subscriptions {
+        state: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        cli.call(IpcCommand::SetSubscriptions {
+            topics: battery_only
+        }),
+        Err(ErrorCode::Unsupported)
+    );
+    assert!(!host.battery_armed());
+    assert_eq!(subscribe(&mut ui, battery_only), initial);
+    wait_for(WAIT, || host.battery_armed());
+    assert!(!host.armed());
+    let first = ui.event(|event| matches!(event, IpcEvent::BatteryTick { .. }));
+    assert!(matches!(
+        first,
+        IpcEvent::BatteryTick { sample }
+            if sample.power_source == Some(PowerSource::Ac)
+                && sample.battery_percent == Some(76)
+                && sample.detail.is_some_and(|d| d.rate_mw == Some(50_000) && d.voltage_mv == Some(16_510))
+    ));
+    assert_eq!(host.counts.samples.load(Acquire), 0);
+    assert_eq!(
+        cli.call(IpcCommand::GetSnapshot {}),
+        Ok(IpcReply::Snapshot { snapshot: initial })
+    );
+    subscribe(&mut ui, state_only);
+    wait_for(WAIT, || !host.battery_armed());
+    let settled = host.counts.battery_samples.load(Acquire);
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(host.counts.battery_samples.load(Acquire), settled);
 }
 
 #[test]
